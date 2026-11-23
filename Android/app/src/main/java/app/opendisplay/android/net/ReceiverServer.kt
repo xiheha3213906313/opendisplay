@@ -1,9 +1,11 @@
 package app.opendisplay.android.net
 
+import android.media.AudioManager
 import android.os.SystemClock
 import android.util.Base64
 import app.opendisplay.android.Log
 import app.opendisplay.android.audio.AudioPlayer
+import app.opendisplay.android.audio.MediaVolume
 import app.opendisplay.android.protocol.AudioWire
 import app.opendisplay.android.protocol.ClockSync
 import app.opendisplay.android.protocol.Codec
@@ -40,6 +42,7 @@ class ReceiverServer(
     private val listener: Listener,
     /** Builds the current `hello`; called on network threads. */
     private val helloFactory: (cursorPort: Int?) -> JSONObject,
+    audioManager: AudioManager? = null,
     private val port: Int = WireProtocol.TCP_PORT,
 ) {
     interface Listener {
@@ -69,6 +72,7 @@ class ReceiverServer(
     private val candidates = mutableListOf<Socket>()
     private var timers: ScheduledExecutorService? = null
     private var cursorChannel: CursorChannel? = null
+    private val mediaVolume = audioManager?.let(::MediaVolume)
 
     @Volatile var senderPv: Int = WireProtocol.ASSUMED_WHEN_ABSENT
         private set
@@ -87,6 +91,7 @@ class ReceiverServer(
         }.also { t ->
             t.scheduleWithFixedDelay(::tick, 2, 2, TimeUnit.SECONDS)
             t.scheduleWithFixedDelay(::sendStats, 5, 5, TimeUnit.SECONDS)
+            t.scheduleWithFixedDelay({ current?.pollAudioVolume() }, 500, 500, TimeUnit.MILLISECONDS)
         }
         Thread({ acceptLoop(gen) }, "od-accept").apply { isDaemon = true }.start()
     }
@@ -300,6 +305,7 @@ class ReceiverServer(
             when (obj.optString("type")) {
                 "audioStart" -> session.startAudio(obj)
                 "audioStop" -> session.stopAudio(obj.optString("id"))
+                "audioSetVolume" -> scheduleVolumeChange(session, obj)
                 else -> dispatchControl(obj)
             }
         } catch (e: Exception) {
@@ -307,6 +313,15 @@ class ReceiverServer(
             // sender's bug, never a reason to drop the session or crash.
             Log.w(TAG, "ignored malformed ${obj.optString("type")}: $e")
         }
+    }
+
+    private fun scheduleVolumeChange(session: Session, request: JSONObject) {
+        val id = request.optString("id")
+        val sequence = request.optLong("sequence", 0)
+        val index = request.opt("index") as? Int
+        val muted = request.opt("muted") as? Boolean
+        if (sequence <= 0 || (index == null && muted == null)) return
+        timers?.execute { session.setAudioVolume(id, sequence, index, muted) }
     }
 
     private fun dispatchControl(obj: JSONObject) {
@@ -381,6 +396,11 @@ class ReceiverServer(
         private val audioLock = Any()
         private var audioID: String? = null
         private var audio: AudioPlayer? = null
+        private var volumeEnabled = false
+        private var audioReady = false
+        private var volumeSequence = 0L
+        private var volumePending = false
+        private var lastVolume: MediaVolume.State? = null
         @Volatile var isOpen = true
             private set
         @Volatile var lastReceive = SystemClock.elapsedRealtime()
@@ -436,9 +456,15 @@ class ReceiverServer(
                 }
                 audio?.close()
                 audioID = id
+                audioReady = false
+                volumeEnabled = request.optInt("volumeControl") == 1 && mediaVolume != null
+                volumeSequence = 0
+                volumePending = false
+                lastVolume = null
                 audio = AudioPlayer { status ->
                     synchronized(audioLock) {
                         if (isOpen && current === this && audioID == id) {
+                            audioReady = status == "ready"
                             sendAudioStatus(id, status)
                         }
                     }
@@ -452,11 +478,76 @@ class ReceiverServer(
                 audio?.close()
                 audio = null
                 audioID = null
+                audioReady = false
+                volumeEnabled = false
+                volumePending = false
+                lastVolume = null
             }
         }
 
         private fun sendAudioStatus(id: String, status: String) {
-            send(Messages.simple("audioStatus").put("id", id).put("status", status))
+            val message = Messages.simple("audioStatus").put("id", id).put("status", status)
+            if (status == "ready" && volumeEnabled) {
+                lastVolume = mediaVolume?.read()
+                lastVolume?.let { message.put("volume", it.json()) }
+            }
+            send(message)
+        }
+
+        fun pollAudioVolume() {
+            synchronized(audioLock) {
+                val id = audioID ?: return
+                if (!canControlVolume(id) || volumePending) return
+                val state = mediaVolume?.read() ?: return
+                if (state != lastVolume) sendVolume(id, state)
+            }
+        }
+
+        fun setAudioVolume(id: String, sequence: Long, index: Int?, muted: Boolean?) {
+            synchronized(audioLock) {
+                if (!canControlVolume(id) || sequence <= volumeSequence) return
+                val controller = mediaVolume ?: return
+                val before = controller.read()
+                volumeSequence = sequence
+                volumePending = true
+                if (index != null) controller.setIndex(index, before)
+                if (index == null && muted != null) controller.setMuted(muted, before)
+                // At index zero the system may mute as part of setting the
+                // volume. Preserve an existing explicit mute on other edits.
+                val wantedMute = muted ?: before.muted.takeIf { index != 0 && before.index > before.minimum }
+                verifyVolume(id, sequence, index, wantedMute, attempts = 5, muteIssued = index == null)
+            }
+        }
+
+        private fun verifyVolume(id: String, sequence: Long, index: Int?, muted: Boolean?,
+                                 attempts: Int, muteIssued: Boolean) {
+            timers?.schedule({
+                synchronized(audioLock) {
+                    if (!canControlVolume(id) || sequence != volumeSequence) return@synchronized
+                    val controller = mediaVolume ?: return@synchronized
+                    val state = controller.read()
+                    val volumeMatched = index == null || index == state.index
+                    val muteMatched = muted == null || muted == state.muted
+                    if (attempts <= 1 || (volumeMatched && muteMatched)) {
+                        volumePending = false
+                        sendVolume(id, state, sequence)
+                    } else {
+                        val applyMute = !muteIssued && !muteMatched && (volumeMatched || attempts == 2)
+                        if (applyMute && muted != null) controller.setMuted(muted, state)
+                        verifyVolume(id, sequence, index, muted, attempts - 1, muteIssued || applyMute)
+                    }
+                }
+            }, 80, TimeUnit.MILLISECONDS)
+        }
+
+        private fun canControlVolume(id: String): Boolean =
+            isOpen && current === this && volumeEnabled && audioReady && id == audioID
+
+        private fun sendVolume(id: String, state: MediaVolume.State, sequence: Long? = null) {
+            lastVolume = state
+            val message = state.json().put("type", "audioVolumeState").put("id", id)
+            if (sequence != null) message.put("sequence", sequence)
+            send(message)
         }
 
         private fun writeLoop() {

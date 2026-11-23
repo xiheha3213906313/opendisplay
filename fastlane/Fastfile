@@ -1,3 +1,7 @@
+require "base64"
+require "shellwords"
+require "tempfile"
+
 def asc_api_key
   app_store_connect_api_key(
     key_id:                ENV.fetch("APP_STORE_CONNECT_KEY_ID"),
@@ -67,6 +71,36 @@ platform :mac do
       profile_name:          "match Direct #{bundle_id} macos",
       targets:               [scheme]
     )
+    xcargs = version_xcargs
+    if scheme == "OpenSidecarMac"
+      # The installer must be embedded before Xcode seals the sender,
+      # including builds subsequently delivered by Sparkle.
+      if !ENV["AUDIO_INSTALLER_CERTIFICATE_P12"].to_s.empty?
+        Tempfile.create(["opendisplay-installer", ".p12"]) do |certificate|
+          certificate.binmode
+          certificate.write(Base64.strict_decode64(ENV.fetch("AUDIO_INSTALLER_CERTIFICATE_P12")))
+          certificate.flush
+          import_certificate(
+            certificate_path: certificate.path,
+            certificate_format: "pkcs12",
+            certificate_password: ENV.fetch("AUDIO_INSTALLER_CERTIFICATE_PASSWORD", ""),
+            keychain_name: ENV.fetch("MATCH_KEYCHAIN_NAME", "login"),
+            keychain_password: ENV["MATCH_KEYCHAIN_PASSWORD"]
+          )
+        end
+      end
+      root = sh("git rev-parse --show-toplevel", log: false).strip
+      staging = File.join(root, "build", "audio-driver-release")
+      driver_script = File.join(root, "MacAudioDriver", "build-package.sh")
+      application = ENV.fetch("AUDIO_DRIVER_SIGNING_IDENTITY", "Developer ID Application")
+      installer = ENV.fetch("AUDIO_INSTALLER_SIGNING_IDENTITY", "Developer ID Installer")
+      sh("AUDIO_DRIVER_SIGNING_IDENTITY=#{application.shellescape} " \
+         "AUDIO_INSTALLER_SIGNING_IDENTITY=#{installer.shellescape} " \
+         "bash #{driver_script.shellescape} release #{staging.shellescape}")
+      package = File.join(staging, "OpenDisplay Audio.pkg")
+      notarize(package: package, api_key: key)
+      xcargs += " OPEN_DISPLAY_AUDIO_DRIVER_PACKAGE=#{package.shellescape}"
+    end
     build_mac_app(
       project:          "OpenSidecar.xcodeproj",
       scheme:           scheme,
@@ -74,7 +108,7 @@ platform :mac do
       export_method:    "developer-id",
       output_directory: "build/export",
       output_name:      name,
-      xcargs:           version_xcargs
+      xcargs:           xcargs
     )
     # gym/notarize resolve relative paths against the repo root, but during a
     # lane fastlane chdir's the process into fastlane/, so a shell `sh` block

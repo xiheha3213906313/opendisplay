@@ -994,6 +994,8 @@ final class SenderController: ObservableObject {
 final class PermissionMonitor: ObservableObject {
     @Published var screenRecording = false
     @Published var accessibility = false
+    @Published var audioDriver = AudioDriverStatus.checking
+    @Published var audioDriverAlert = false
     private var timer: Timer?
 
     init() {
@@ -1006,6 +1008,17 @@ final class PermissionMonitor: ObservableObject {
     func refresh() {
         screenRecording = CGPreflightScreenCaptureAccess()
         accessibility = AXIsProcessTrusted()
+        VirtualAudioOutputs.shared.checkInstallStatus { [weak self] status in
+            self?.audioDriver = status
+        }
+    }
+
+    func installAudioDriver() {
+        guard let pkg = Bundle.main.url(forResource: "OpenDisplayAudioDriver", withExtension: "pkg"),
+              NSWorkspace.shared.open(pkg) else {
+            audioDriverAlert = true
+            return
+        }
     }
 
     /// Fire the system permission dialog on demand. macOS only shows each
@@ -1140,6 +1153,7 @@ struct ContentView: View {
                 .help("Opens System Settings → Displays, where you can position the extended displays relative to your Mac screen (Arrange…). Each device shows up as its own display, named after the device.")
 
                 Section("Permissions") {
+                    audioDriverRow
                     permissionRow(
                         "Screen Recording",
                         granted: permissions.screenRecording,
@@ -1202,6 +1216,44 @@ struct ContentView: View {
             .padding(.vertical, 10)
         }
         .frame(width: 440, height: 540)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            permissions.refresh()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: VirtualAudioOutputs.devicesChanged)) { _ in
+            permissions.refresh()
+        }
+        .alert("Audio driver installer unavailable", isPresented: $permissions.audioDriverAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Open an OpenDisplay build that includes the driver installer, then try again.")
+        }
+    }
+
+    private var audioDriverRow: some View {
+        let status = permissions.audioDriver
+        let detail: String
+        switch status {
+        case .checking: detail = "Checking driver…"
+        case .missing: detail = "Install to use Android as a sound output."
+        case .restartRequired: detail = "Installed. Restart macOS to load the driver."
+        case .ready: detail = "Ready for Android sound."
+        case .updateAvailable: detail = "Update to use Android system volume controls."
+        }
+        return HStack(alignment: .firstTextBaseline) {
+            Image(systemName: status == .ready ? "checkmark.circle.fill" : "info.circle")
+                .foregroundStyle(status == .ready ? .green : .secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Audio Driver")
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if status == .missing || status == .updateAvailable {
+                Button(status == .missing ? "Install…" : "Update…") {
+                    permissions.installAudioDriver()
+                }
+                .controlSize(.small)
+            }
+        }
     }
 
     @ViewBuilder

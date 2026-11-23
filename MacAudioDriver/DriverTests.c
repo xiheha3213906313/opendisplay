@@ -1,6 +1,7 @@
 #include <CoreAudio/AudioServerPlugIn.h>
 #include <CoreAudio/HostTime.h>
 #include <assert.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdatomic.h>
 #include <unistd.h>
@@ -21,6 +22,7 @@ static const AudioServerPlugInHostInterface host = {.PropertiesChanged = changed
 static AudioServerPlugInDriverRef driver;
 static const AudioObjectPropertyAddress registryAddress = {'odrg', kAudioObjectPropertyScopeGlobal, 0};
 static const AudioObjectPropertyAddress pcmAddress = {'odpc', kAudioObjectPropertyScopeGlobal, 0};
+static const AudioObjectPropertyAddress volumeControlAddress = {'odvc', kAudioObjectPropertyScopeGlobal, 0};
 static const AudioObjectPropertyAddress deviceListAddress = {kAudioPlugInPropertyDeviceList, kAudioObjectPropertyScopeGlobal, 0};
 static CFStringRef ownerToken = CFSTR("8710537E-9C8D-4693-9BFF-AC613B1539B9");
 static CFStringRef otherToken = CFSTR("32A25DBB-EA62-4920-8AF4-3C67AEB44C4E");
@@ -72,6 +74,19 @@ static void assertSamples(AudioObjectID device, const float *samples, size_t len
     CFRelease(data);
 }
 
+static OSStatus setNativeVolume(AudioObjectID device, SInt64 revision, bool native, CFStringRef token) {
+    CFNumberRef number = CFNumberCreate(NULL, kCFNumberSInt64Type, &revision);
+    const void *keys[] = {CFSTR("volumeRevision"), CFSTR("nativeVolume")};
+    const void *values[] = {number, native ? kCFBooleanTrue : kCFBooleanFalse};
+    CFDictionaryRef request = CFDictionaryCreate(NULL, keys, values, 2,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    OSStatus status = (*driver)->SetPropertyData(driver, device, getpid(), &volumeControlAddress,
+        sizeof(token), &token, sizeof(request), &request);
+    CFRelease(request);
+    CFRelease(number);
+    return status;
+}
+
 int main(void) {
     driver = OpenDisplayAudio_Create(NULL, kAudioServerPlugInTypeUUID);
     assert(driver && (*driver)->Initialize(driver, &host) == noErr);
@@ -108,6 +123,16 @@ int main(void) {
     assert((*driver)->SetPropertyData(driver, first + 2, getpid(), &volume, 0, NULL, sizeof(half), &half) == noErr);
     writeMix(first, left, 2);
     const float quieter[] = {.25f, 0, -.25f, 0};
+    assertSamples(first, quieter, 4);
+    assert(setNativeVolume(first, 1, true, otherToken) == kAudioDevicePermissionsError);
+    assert(setNativeVolume(first, 0, true, ownerToken) == noErr);
+    writeMix(first, left, 2);
+    assertSamples(first, quieter, 4); // Stale revision left software gain intact.
+    assert(setNativeVolume(first, 1, true, ownerToken) == noErr);
+    writeMix(first, left, 2);
+    assertSamples(first, left, 4); // Android is applying gain, so HAL passes unity.
+    assert(setNativeVolume(first, 1, false, ownerToken) == noErr);
+    writeMix(first, left, 2);
     assertSamples(first, quieter, 4);
     for (int i = 0; i < 10; ++i) writeMix(second, right, 2);
     float backlog[16];

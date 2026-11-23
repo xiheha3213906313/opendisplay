@@ -13,6 +13,7 @@ import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
 import android.graphics.Color
 import android.graphics.Typeface
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -127,7 +128,7 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
         enterImmersive()
 
         decoder = VideoDecoder(this).also { it.start() }
-        server = ReceiverServer(this, ::buildHello)
+        server = ReceiverServer(this, ::buildHello, getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
         advertiser = Advertiser(this)
         val slop = 10 * resources.displayMetrics.density
         gestures = TouchGestures(
@@ -160,6 +161,7 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
 
     override fun onResume() {
         super.onResume()
+        volumeControlStream = AudioManager.STREAM_MUSIC
         shake.start()
     }
 

@@ -1,6 +1,10 @@
 import CoreAudio
 import Foundation
 
+enum AudioDriverStatus: Equatable {
+    case checking, missing, restartRequired, ready, updateAvailable
+}
+
 /// Transfers the latest packet without queuing one closure per audio block on
 /// a sender whose network and video queue is busy.
 final class AudioOutputMailbox {
@@ -41,11 +45,14 @@ final class AudioOutputMailbox {
 /// virtual device's own controls.
 final class VirtualAudioOutputs {
     static let shared = VirtualAudioOutputs()
+    static let devicesChanged = Notification.Name("OpenDisplayAudioDevicesChanged")
 
     private static let protocolVersion = 2
     private static let versionProperty: AudioObjectPropertySelector = 0x6f647672 // odvr
     private static let registryProperty: AudioObjectPropertySelector = 0x6f647267 // odrg
     private static let pcmProperty: AudioObjectPropertySelector = 0x6f647063 // odpc
+    private static let volumeProtocolProperty: AudioObjectPropertySelector = 0x6f647670 // odvp
+    private static let volumeControlProperty: AudioObjectPropertySelector = 0x6f647663 // odvc
     #if DEBUG
     private static let bundleID = "app.opendisplay.audio.driver.debug"
     #else
@@ -58,6 +65,10 @@ final class VirtualAudioOutputs {
         let name: String
         let mailbox: AudioOutputMailbox
         let onFailure: (String) -> Void
+        let request: UUID
+        let sendVolume: (AndroidVolumeCommand) -> Void
+        var volume: RemoteAudioVolume?
+        var didReadVolume = false
         var onRegistered: (() -> Void)?
     }
 
@@ -77,6 +88,7 @@ final class VirtualAudioOutputs {
     private var objectIDs: [String: AudioObjectID] = [:]
     private var routing = AudioOutputRouting()
     private var pendingDefault: PendingDefault?
+    private var nextVolumePoll = DispatchTime.now()
 
     private init() {
         heartbeat = DispatchSource.makeTimerSource(queue: queue)
@@ -85,6 +97,11 @@ final class VirtualAudioOutputs {
             var address = address(selector)
             AudioObjectAddPropertyListenerBlock(system, &address, queue, { [weak self] _, _ in
                 self?.refreshDevices()
+                if selector == kAudioHardwarePropertyDevices {
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(name: Self.devicesChanged, object: nil)
+                    }
+                }
             })
         }
         heartbeat.schedule(deadline: .now() + 1, repeating: .seconds(1), leeway: .milliseconds(100))
@@ -98,7 +115,31 @@ final class VirtualAudioOutputs {
         queue.async { completion(self.driverProblem()) }
     }
 
+    func checkInstallStatus(_ completion: @escaping (AudioDriverStatus) -> Void) {
+        queue.async {
+            let infoURL = URL(fileURLWithPath: "/Library/Audio/Plug-Ins/HAL", isDirectory: true)
+                .appendingPathComponent(Self.bundleID.hasSuffix(".debug") ? "OpenDisplay Audio Dev.driver" : "OpenDisplay Audio.driver")
+                .appendingPathComponent("Contents/Info.plist")
+            let installed = (try? Data(contentsOf: infoURL))
+                .flatMap { try? PropertyListSerialization.propertyList(from: $0, options: [], format: nil) as? [String: Any] }
+            let build = (installed?["CFBundleVersion"] as? String).flatMap(Int.init) ?? 0
+            let status: AudioDriverStatus
+            if let driver = self.checkedDriver(), self.supportsVolume(driver) {
+                status = .ready
+            } else if installed?["CFBundleIdentifier"] as? String == Self.bundleID, build >= 3 {
+                status = .restartRequired
+            } else if self.driverObject() != nil || installed != nil {
+                status = .updateAvailable
+            } else {
+                status = .missing
+            }
+            DispatchQueue.main.async { completion(status) }
+        }
+    }
+
     func register(session: UUID, deviceID: UUID, name: String, mailbox: AudioOutputMailbox,
+                  request: UUID = UUID(), volume: AndroidVolumeState? = nil,
+                  sendVolume: @escaping (AndroidVolumeCommand) -> Void = { _ in },
                   onFailure: @escaping (String) -> Void, onRegistered: @escaping () -> Void) {
         queue.async {
             guard let plugin = self.checkedDriver() else {
@@ -118,7 +159,12 @@ final class VirtualAudioOutputs {
             let distinct = ([baseName] + (2...17).map { "\(baseName) (\($0))" })
                 .first(where: { !occupied.contains($0) }) ?? baseName
             let route = Route(session: session, uid: uid, name: current?.name ?? distinct,
-                              mailbox: mailbox, onFailure: onFailure, onRegistered: onRegistered)
+                              mailbox: mailbox, onFailure: onFailure, request: request, sendVolume: sendVolume,
+                              volume: self.supportsVolume(plugin) ? volume.map(RemoteAudioVolume.init) : nil,
+                              onRegistered: onRegistered)
+            if let volume, route.volume != nil {
+                Log.info("audio: Android media controls volume=\(volume.canVolume) mute=\(volume.canMute)")
+            }
             if let existing = updated.firstIndex(where: { $0.uid == uid }) {
                 updated[existing] = route
             } else {
@@ -134,6 +180,22 @@ final class VirtualAudioOutputs {
                 self.pcmTimer.schedule(deadline: .now(), repeating: .milliseconds(10), leeway: .milliseconds(2))
             }
             self.refreshDevices()
+            if current?.volume != nil, route.volume == nil, let object = self.objectIDs[uid],
+               let fields = self.cfProperty(object, Self.volumeControlProperty, qualifier: self.registryToken) as? [String: Any],
+               let state = HALVolumeState(fields), state.nativeVolume {
+                self.writeProperty(object, Self.volumeControlProperty,
+                                   value: ["nativeVolume": false, "volumeRevision": state.volumeRevision] as CFDictionary,
+                                   qualifier: self.registryToken)
+            }
+        }
+    }
+
+    func receiveVolume(session: UUID, request: UUID, state: AndroidVolumeState) {
+        queue.async {
+            guard let position = self.routes.firstIndex(where: { $0.session == session && $0.request == request })
+            else { return }
+            self.routes[position].volume?.receive(state)
+            self.syncVolumes(now: .now())
         }
     }
 
@@ -188,6 +250,7 @@ final class VirtualAudioOutputs {
             findOutput(route.uid).map { (route.uid, $0) }
         })
         if routes.isEmpty { pcmTimer.schedule(deadline: .distantFuture) }
+        syncVolumes(now: .now())
         reconcileDefault()
         for index in routes.indices where objectIDs[routes[index].uid] != nil {
             let callback = routes[index].onRegistered
@@ -197,11 +260,37 @@ final class VirtualAudioOutputs {
     }
 
     private func drainPCM() {
+        let now = DispatchTime.now()
+        if now >= nextVolumePoll {
+            nextVolumePoll = now + .milliseconds(80)
+            syncVolumes(now: now)
+        }
         for route in routes {
             guard let object = objectIDs[route.uid],
                   let pcm = cfProperty(object, Self.pcmProperty, qualifier: registryToken) as? Data, !pcm.isEmpty,
                   let payload = AudioWire.packHALSamples(pcm) else { continue }
             route.mailbox.offer(payload)
+        }
+    }
+
+    private func syncVolumes(now: DispatchTime) {
+        guard routes.contains(where: { $0.volume != nil }) else { return }
+        let selected = number(system, kAudioHardwarePropertyDefaultOutputDevice)
+        for index in routes.indices {
+            guard var volume = routes[index].volume, let object = objectIDs[routes[index].uid],
+                  let fields = cfProperty(object, Self.volumeControlProperty, qualifier: registryToken) as? [String: Any],
+                  let hal = HALVolumeState(fields) else { continue }
+            if !routes[index].didReadVolume {
+                routes[index].didReadVolume = true
+                Log.info("audio: HAL volume synchronization started")
+            }
+            let result = volume.poll(hal, selected: object == selected, now: now)
+            routes[index].volume = volume
+            if !result.update.isEmpty {
+                writeProperty(object, Self.volumeControlProperty, value: result.update as CFDictionary,
+                              qualifier: registryToken)
+            }
+            if let command = result.command { routes[index].sendVolume(command) }
         }
     }
 
@@ -297,6 +386,10 @@ final class VirtualAudioOutputs {
         return object
     }
 
+    private func supportsVolume(_ plugin: AudioObjectID) -> Bool {
+        (cfProperty(plugin, Self.volumeProtocolProperty) as? NSNumber)?.intValue == 1
+    }
+
     private func driverProblem() -> String? {
         guard let plugin = driverObject() else { return "Install the OpenDisplay audio driver and restart to use Android sound." }
         guard (cfProperty(plugin, Self.versionProperty) as? NSNumber)?.intValue == Self.protocolVersion else {
@@ -307,10 +400,26 @@ final class VirtualAudioOutputs {
 
     private func writeRegistry(_ entries: [Route], on plugin: AudioObjectID) -> Bool {
         let value = ["token": registryToken, "devices": entries.map { ["uid": $0.uid, "name": $0.name] }] as CFDictionary
+        return writeProperty(plugin, Self.registryProperty, value: value)
+    }
+
+    @discardableResult
+    private func writeProperty(_ object: AudioObjectID, _ property: AudioObjectPropertySelector,
+                               value: CFDictionary, qualifier: CFString? = nil) -> Bool {
         var arg = Unmanaged.passUnretained(value)
-        var address = address(Self.registryProperty)
-        let result = AudioObjectSetPropertyData(plugin, &address, 0, nil, UInt32(MemoryLayout.size(ofValue: arg)), &arg)
-        if result != noErr { Log.info("audio: driver rejected registry update (\(result))") }
+        var address = address(property)
+        let size = UInt32(MemoryLayout.size(ofValue: arg))
+        let result: OSStatus
+        if let qualifier {
+            var token = Unmanaged.passUnretained(qualifier)
+            result = AudioObjectSetPropertyData(object, &address, UInt32(MemoryLayout.size(ofValue: token)),
+                                                &token, size, &arg)
+        } else {
+            result = AudioObjectSetPropertyData(object, &address, 0, nil, size, &arg)
+        }
+        if result != noErr {
+            Log.info("audio: driver rejected \(property == Self.registryProperty ? "registry" : "volume") update (\(result))")
+        }
         return result == noErr
     }
 

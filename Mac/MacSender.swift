@@ -81,6 +81,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     // Audio negotiation, capture and sends are ordered on the connection queue.
     private let audioSession = UUID()
     private var audioReceiver: UUID?
+    private var audioVolumeOffered = false
     private var audioDriverCheck: UUID?
     private var audioRequest: UUID?
     private var audioRegistered = false
@@ -2618,6 +2619,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 // phone dedupes by content.
                 sendWelcome()
                 let offered = AudioWire.isOffered(by: obj)
+                audioVolumeOffered = offered && (obj["audioVolume"] as? Int) == 1
                 let receiver = offered ? info.id.flatMap(UUID.init(uuidString:)) : nil
                 if audioReceiver != receiver {
                     stopAudio(notifyPeer: true)
@@ -2647,6 +2649,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         case "audioStatus":
             handleAudioStatus(obj)
+        case "audioVolumeState":
+            if let request = audioRequest, let id = obj["id"] as? String, UUID(uuidString: id) == request,
+               let state = AndroidVolumeState(obj) {
+                VirtualAudioOutputs.shared.receiveVolume(session: audioSession, request: request, state: state)
+            }
         case "touch":
             if let phase = obj["phase"] as? String,
                let x = obj["x"] as? Double,
@@ -3359,7 +3366,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 self.audioRequest = id
                 self.audioDeadline = .now() + .seconds(5)
                 self.publishAudioState("Preparing Android sound output…")
-                self.sendJSONFrame("{\"type\":\"audioStart\",\"id\":\"\(id.uuidString)\",\"format\":\"\(AudioWire.format)\"}")
+                var message: [String: Any] = [
+                    "type": "audioStart", "id": id.uuidString, "format": AudioWire.format
+                ]
+                if self.audioVolumeOffered { message["volumeControl"] = 1 }
+                self.sendAudioControl(message)
             }
         }
     }
@@ -3376,7 +3387,15 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 self?.sendAudio(payload, for: request)
             }
             VirtualAudioOutputs.shared.register(session: audioSession, deviceID: deviceID,
-                name: endpointName, mailbox: mailbox, onFailure: { [weak self] reason in
+                name: endpointName, mailbox: mailbox, request: request,
+                volume: (message["volume"] as? [String: Any]).flatMap(AndroidVolumeState.init),
+                sendVolume: { [weak self] command in
+                    guard let self else { return }
+                    self.queue.async {
+                        guard self.audioRequest == request else { return }
+                        self.sendAudioControl(command.message(id: request))
+                    }
+                }, onFailure: { [weak self] reason in
                     guard let self else { return }
                     self.queue.async {
                         guard self.audioRequest == request else { return }
@@ -3395,6 +3414,12 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         default:
             break
         }
+    }
+
+    private func sendAudioControl(_ message: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: message),
+              let json = String(data: data, encoding: .utf8) else { return }
+        sendJSONFrame(json)
     }
 
     private func sendAudio(_ payload: Data, for request: UUID) {
@@ -3440,6 +3465,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private func resetAudioLink() {
         stopAudio(notifyPeer: false)
         audioReceiver = nil
+        audioVolumeOffered = false
         audioFailed = false
         publishAudioState(nil)
     }

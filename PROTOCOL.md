@@ -755,6 +755,25 @@ video. The receiver limits queued PCM to four payloads and discards expired
 audio as it drains the queue. TCP congestion can still delay an audio frame
 behind a video frame already submitted to the connection.
 
+### 6.8.1 Android media volume
+
+A receiver can advertise `"audioVolume":1` in `hello`. A sender can then
+include `"volumeControl":1` in `audioStart`. The receiver reports its current
+media volume as a `volume` object on `audioStatus` when playback becomes
+ready. The volume state includes `min`, `max`, `index`, `muted`, `canVolume`
+and `canMute`. If negotiated, the receiver also sends an `audioVolumeState`
+message with the same fields and current audio request `id` whenever the
+state changes.
+
+`audioSetVolume` carries the current audio request `id`, a positive,
+increasing integer `sequence`, and an `index`, `muted`, or both. The receiver
+answers with `audioVolumeState` with the same sequence and the actual media
+state after attempting the change. The sender drops stale replies and uses
+its local software controls when the relevant operation is unavailable,
+the state did not reach the requested value, or a reply times out. The
+receiver applies commands only during the matching, ready audio request.
+This is an optional extension to the existing PCM transport.
+
 ## 7. Coordinate spaces and units
 
 The most common third-party bug is a unit mismatch, so here is every space

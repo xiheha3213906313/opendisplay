@@ -2,10 +2,10 @@
 
 ## Install and select an output
 
-Use macOS 14 or later. Install **OpenDisplay Audio.pkg** for the release
-Mac sender or **OpenDisplay Audio Dev.pkg** for the Debug sender. macOS
-prompts for administrator authorization. Restart when Installer asks, then
-launch the matching sender and connect an audio-capable Android receiver.
+Use macOS 14 or later. In the Mac sender, open **Permissions → Audio Driver**
+and choose **Install…** or **Update…**. Installer prompts for administrator
+authorization. Restart when Installer asks, then launch the sender and
+connect an audio-capable Android receiver.
 The plug-in supports Apple silicon and Intel Macs.
 
 The first Android ready for audio becomes the default output. Pick a
@@ -13,6 +13,12 @@ connected receiver in **System Settings → Sound → Output** or the Sound
 control in Control Center. Its volume and mute controls apply to that
 receiver. Choosing speakers or headphones keeps that selection until you
 choose another output or finish the current group of sessions.
+
+With a compatible Android receiver and driver, the Mac's volume and mute
+adjust the Android system media stream, which can affect other Android
+apps that use that stream. Control returns to the Mac's software gain or
+mute if the receiver's system setting cannot be changed. Video works
+without the driver.
 
 If the selected Android disconnects, OpenDisplay selects the earliest
 remaining Android ready for audio, or restores the prior local output
@@ -36,6 +42,10 @@ From the checkout, run `bash MacAudioDriver/test.sh` for the driver tests and
 `AUDIO_DRIVER_SIGNING_IDENTITY` (Developer ID Application), and a
 `AUDIO_INSTALLER_SIGNING_IDENTITY` (Developer ID Installer). Notarize the
 signed installer before public distribution.
+The sender's Fastlane release lane embeds that signed and notarized package.
+Release CI can import the Developer ID Installer identity using
+`AUDIO_INSTALLER_CERTIFICATE_P12` (base64) and
+`AUDIO_INSTALLER_CERTIFICATE_PASSWORD`.
 
 For local Debug testing, `bash MacAudioDriver/build-package.sh debug build/audio-driver --reload-audio`
 builds an installer that briefly restarts Core Audio after installation.

@@ -178,6 +178,8 @@ jobs:
           DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
           APP_BUILD_NUMBER: ${{ github.run_number }}
+          AUDIO_INSTALLER_CERTIFICATE_P12: ${{ secrets.AUDIO_INSTALLER_CERTIFICATE_P12 }}
+          AUDIO_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.AUDIO_INSTALLER_CERTIFICATE_PASSWORD }}
         run: |
           export APP_MARKETING_VERSION="${TAG_NAME#v}"
           bundle exec fastlane mac build_release

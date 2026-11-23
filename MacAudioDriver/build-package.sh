@@ -5,13 +5,14 @@ cd "$(dirname "$0")"
 configuration=${1:-debug}
 work=${2:-"$PWD/../build/audio-driver"}
 reload=${3:-}
-version=1.1
+version=1.2
 case "$configuration" in
     debug)
         bundle_id=app.opendisplay.audio.driver.debug
         driver_name="OpenDisplay Audio Dev"
         application_identity="-"
         installer_sign=()
+        driver_sign=()
         ;;
     release)
         bundle_id=app.opendisplay.audio.driver
@@ -20,6 +21,7 @@ case "$configuration" in
         : "${AUDIO_INSTALLER_SIGNING_IDENTITY:?Developer ID Installer identity required}"
         application_identity=$AUDIO_DRIVER_SIGNING_IDENTITY
         installer_sign=(--sign "$AUDIO_INSTALLER_SIGNING_IDENTITY")
+        driver_sign=(--timestamp --options runtime)
         ;;
     *) printf 'Expected debug or release configuration\n' >&2; exit 2 ;;
 esac
@@ -42,7 +44,7 @@ cat > "$bundle/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key><string>$driver_name</string>
     <key>CFBundlePackageType</key><string>BNDL</string>
     <key>CFBundleShortVersionString</key><string>$version</string>
-    <key>CFBundleVersion</key><string>2</string>
+    <key>CFBundleVersion</key><string>3</string>
     <key>CFPlugInFactories</key><dict><key>$factory</key><string>OpenDisplayAudio_Create</string></dict>
     <key>CFPlugInTypes</key>
     <dict><key>443ABAB8-E7B3-491A-B985-BEB9187030DB</key><array><string>$factory</string></array></dict>
@@ -54,9 +56,9 @@ clang -bundle -arch arm64 -arch x86_64 -mmacosx-version-min=14.0 \
     -D "OD_BUNDLE_ID=\"$bundle_id\"" -framework CoreAudio -framework CoreFoundation \
     Driver.c -o "$bundle/Contents/MacOS/OpenDisplayAudio"
 cp APPLE-LICENSE.txt ../LICENSE ../Audio-attribution.md "$bundle/Contents/Resources/"
-codesign --force --sign "$application_identity" "$bundle"
+codesign --force --sign "$application_identity" ${driver_sign[@]+"${driver_sign[@]}"} "$bundle"
 codesign --verify --strict "$bundle"
-plutil -lint "$bundle/Contents/Info.plist"
+plutil -lint "$bundle/Contents/Info.plist" >&2
 
 # Restrict the package to this bundle at a fixed system location.
 conclusion='onConclusion="RequireRestart"'
@@ -75,7 +77,7 @@ POSTINSTALL
     conclusion=''
 fi
 pkgbuild --component "$bundle" --install-location /Library/Audio/Plug-Ins/HAL \
-    --identifier "$bundle_id.pkg" --version "$version" ${scripts[@]+"${scripts[@]}"} "$component"
+    --identifier "$bundle_id.pkg" --version "$version" ${scripts[@]+"${scripts[@]}"} "$component" >&2
 cat > "$work/Distribution.xml" <<DISTRIBUTION
 <?xml version="1.0" encoding="UTF-8"?>
 <installer-gui-script minSpecVersion="2">
@@ -89,5 +91,5 @@ cat > "$work/Distribution.xml" <<DISTRIBUTION
 </installer-gui-script>
 DISTRIBUTION
 productbuild --distribution "$work/Distribution.xml" --package-path "$work" \
-    ${installer_sign[@]+"${installer_sign[@]}"} "$package"
+    ${installer_sign[@]+"${installer_sign[@]}"} "$package" >&2
 printf '%s\n' "$package"

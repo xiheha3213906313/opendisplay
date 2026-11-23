@@ -49,6 +49,10 @@ targets:
       - Shared
     dependencies:
       - package: Sparkle
+    postBuildScripts:
+      - name: Embed Audio Driver Installer
+        script: bash "$SRCROOT/MacAudioDriver/embed-package.sh"
+        basedOnDependencyAnalysis: false
     info:
       path: Mac/Info.plist
       properties:
@@ -161,6 +165,7 @@ targets:
       - Mac/AndroidUSBFunction.swift
       - Mac/AudioStream.swift
       - Mac/AudioOutputRouting.swift
+      - Mac/RemoteAudioVolume.swift
       - Mac/USBAccessory.swift
       - Mac/Log.swift
       - Mac/LogPolicies.swift

@@ -17,6 +17,7 @@
 
 enum {
     ODVersionProperty = 'odvr', ODRegistryProperty = 'odrg', ODPCMProperty = 'odpc',
+    ODVolumeProtocolProperty = 'odvp', ODVolumeControlProperty = 'odvc',
     ODProtocolVersion = 2, ODDeviceLimit = 16, ODClockPeriod = 512,
     ODStreamOffset = 1, ODVolumeOffset = 2, ODMuteOffset = 3, ODObjectStride = 4
 };
@@ -32,6 +33,9 @@ typedef struct {
     _Atomic uint64_t seed;
     Float32 volume;
     UInt32 mute;
+    SInt64 volumeRevision;
+    SInt64 muteRevision;
+    bool nativeVolume;
     ODRing pcm;
 } ODDevice;
 
@@ -230,6 +234,9 @@ static OSStatus replaceRegistry(pid_t pid, CFTypeRef value) {
             device->mute = 0;
         }
         device->name = CFRetain(names[i]);
+        device->volumeRevision = 0;
+        device->muteRevision = 0;
+        device->nativeVolume = false;
         atomic_store(&device->streamActive, true);
         ODRingReset(&device->pcm);
         atomic_store(&device->anchor, now);
@@ -264,6 +271,29 @@ static OSStatus copyCF(UInt32 capacity, UInt32 *size, void *out, CFTypeRef value
     *size = sizeof(CFTypeRef);
     if (out) *(CFTypeRef *)out = CFRetain(value);
     return noErr;
+}
+
+static bool numberFrom(CFDictionaryRef dict, CFStringRef key, CFNumberType type, void *out) {
+    CFTypeRef value = CFDictionaryGetValue(dict, key);
+    return value && CFGetTypeID(value) == CFNumberGetTypeID() && CFNumberGetValue(value, type, out);
+}
+
+static OSStatus copyVolume(const ODDevice *device, UInt32 capacity, UInt32 *size, void *out) {
+    if (!out) { *size = sizeof(CFTypeRef); return noErr; }
+    const void *keys[] = {CFSTR("volume"), CFSTR("muted"), CFSTR("volumeRevision"), CFSTR("muteRevision"), CFSTR("nativeVolume")};
+    CFNumberRef volume = CFNumberCreate(NULL, kCFNumberFloat32Type, &device->volume);
+    CFNumberRef volumeRevision = CFNumberCreate(NULL, kCFNumberSInt64Type, &device->volumeRevision);
+    CFNumberRef muteRevision = CFNumberCreate(NULL, kCFNumberSInt64Type, &device->muteRevision);
+    const void *values[] = {volume, device->mute ? kCFBooleanTrue : kCFBooleanFalse, volumeRevision, muteRevision,
+                            device->nativeVolume ? kCFBooleanTrue : kCFBooleanFalse};
+    CFDictionaryRef state = CFDictionaryCreate(NULL, keys, values, 5,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    const OSStatus result = copyCF(capacity, size, out, state);
+    CFRelease(state);
+    CFRelease(muteRevision);
+    CFRelease(volumeRevision);
+    CFRelease(volume);
+    return result;
 }
 
 static const AudioStreamBasicDescription stereoFormat = {
@@ -313,14 +343,16 @@ static OSStatus property(AudioObjectID id, pid_t pid, const AudioObjectPropertyA
         case kAudioObjectPropertyCustomPropertyInfoList: {
             const AudioServerPlugInCustomPropertyInfo info[] = {
                 {ODVersionProperty, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, kAudioServerPlugInCustomPropertyDataTypeNone},
+                {ODVolumeProtocolProperty, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, kAudioServerPlugInCustomPropertyDataTypeNone},
                 {ODRegistryProperty, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, kAudioServerPlugInCustomPropertyDataTypeNone}
             };
             return copyValue(capacity, size, out, info, sizeof(info));
         }
         case ODVersionProperty:
+        case ODVolumeProtocolProperty:
             if (!out) { *size = sizeof(CFTypeRef); return noErr; }
             else {
-                const int version = ODProtocolVersion;
+                const int version = selector == ODVersionProperty ? ODProtocolVersion : 1;
                 CFNumberRef value = CFNumberCreate(NULL, kCFNumberIntType, &version);
                 const OSStatus status = copyCF(capacity, size, out, value);
                 CFRelease(value);
@@ -443,11 +475,16 @@ static OSStatus property(AudioObjectID id, pid_t pid, const AudioObjectPropertyA
     }
     case kAudioDevicePropertyZeroTimeStampPeriod: VALUE(UInt32, ODClockPeriod);
     case kAudioObjectPropertyCustomPropertyInfoList: {
-        const AudioServerPlugInCustomPropertyInfo info = {
-            ODPCMProperty, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, kAudioServerPlugInCustomPropertyDataTypeCFString
+        const AudioServerPlugInCustomPropertyInfo info[] = {
+            {ODPCMProperty, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, kAudioServerPlugInCustomPropertyDataTypeCFString},
+            {ODVolumeControlProperty, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, kAudioServerPlugInCustomPropertyDataTypeCFString}
         };
-        VALUE(AudioServerPlugInCustomPropertyInfo, info);
+        return copyValue(capacity, size, out, info, sizeof(info));
     }
+    case ODVolumeControlProperty:
+        if (out && (!qualifier || qualifierSize != sizeof(CFStringRef) ||
+            !ownsLease(pid, *(const CFStringRef *)qualifier))) return kAudioDevicePermissionsError;
+        return copyVolume(device, capacity, size, out);
     case ODPCMProperty: {
         if (!out) { *size = sizeof(CFTypeRef); return noErr; }
         if (!qualifier || qualifierSize != sizeof(CFStringRef) ||
@@ -456,7 +493,7 @@ static OSStatus property(AudioObjectID id, pid_t pid, const AudioObjectPropertyA
         const uint64_t now = AudioGetCurrentHostTime();
         float samples[ODMaxFrames * ODChannels];
         const uint32_t frames = ODRingRead(&device->pcm, samples, now > maxAgeTicks ? now - maxAgeTicks : 0);
-        const float gain = device->mute ? 0 : device->volume;
+        const float gain = device->mute ? 0 : (device->nativeVolume ? 1 : device->volume);
         for (uint32_t i = 0; i < frames * ODChannels; ++i) samples[i] *= gain;
         *(CFDataRef *)out = CFDataCreate(NULL, (const UInt8 *)samples, frames * ODChannels * sizeof(float));
         *size = sizeof(CFTypeRef);
@@ -483,6 +520,7 @@ static OSStatus isSettable(AudioServerPlugInDriverRef self, AudioObjectID id, pi
     if (!settable || !hasProperty(self, id, pid, address)) return kAudioHardwareUnknownPropertyError;
     switch (address->mSelector) {
     case ODRegistryProperty:
+    case ODVolumeControlProperty:
     case kAudioLevelControlPropertyScalarValue:
     case kAudioLevelControlPropertyDecibelValue:
     case kAudioBooleanControlPropertyValue:
@@ -491,6 +529,62 @@ static OSStatus isSettable(AudioServerPlugInDriverRef self, AudioObjectID id, pi
     case kAudioStreamPropertyVirtualFormat:
     case kAudioStreamPropertyIsActive: *settable = true; break;
     default: *settable = false;
+    }
+    return noErr;
+}
+
+static OSStatus syncVolume(AudioObjectID id, pid_t pid, UInt32 qualifierSize, const void *qualifier,
+                            UInt32 size, const void *data) {
+    if (size != sizeof(CFTypeRef) || !qualifier || qualifierSize != sizeof(CFStringRef)) {
+        return kAudioHardwareBadPropertySizeError;
+    }
+    const CFDictionaryRef state = *(const CFDictionaryRef *)data;
+    if (!state || CFGetTypeID(state) != CFDictionaryGetTypeID()) return kAudioHardwareIllegalOperationError;
+    const CFTypeRef native = CFDictionaryGetValue(state, CFSTR("nativeVolume"));
+    const CFTypeRef muted = CFDictionaryGetValue(state, CFSTR("muted"));
+    SInt64 volumeRevision = -1, muteRevision = -1;
+    Float32 volume = -1;
+    const bool volumeField = numberFrom(state, CFSTR("volume"), kCFNumberFloat32Type, &volume);
+    if ((volumeField && !(volume >= 0 && volume <= 1)) ||
+        (native && CFGetTypeID(native) != CFBooleanGetTypeID()) ||
+        (muted && CFGetTypeID(muted) != CFBooleanGetTypeID())) return kAudioHardwareIllegalOperationError;
+    numberFrom(state, CFSTR("volumeRevision"), kCFNumberSInt64Type, &volumeRevision);
+    numberFrom(state, CFSTR("muteRevision"), kCFNumberSInt64Type, &muteRevision);
+
+    bool volumeChanged = false, muteChanged = false;
+    pthread_mutex_lock(&stateLock);
+    ODDevice *device = findDevice(id);
+    if (!device || !atomic_load(&device->visible)) {
+        pthread_mutex_unlock(&stateLock);
+        return kAudioHardwareBadObjectError;
+    }
+    if (!ownsLease(pid, *(const CFStringRef *)qualifier)) {
+        pthread_mutex_unlock(&stateLock);
+        return kAudioDevicePermissionsError;
+    }
+    // A state update from the sender must not overwrite a newer UI edit.
+    if (volumeRevision == device->volumeRevision) {
+        if (native) device->nativeVolume = CFBooleanGetValue(native);
+        if (volumeField && device->volume != volume) {
+            device->volume = volume;
+            volumeChanged = true;
+        }
+    }
+    if (muted && muteRevision == device->muteRevision && device->mute != CFBooleanGetValue(muted)) {
+        device->mute = CFBooleanGetValue(muted);
+        muteChanged = true;
+    }
+    pthread_mutex_unlock(&stateLock);
+    if (volumeChanged) {
+        const AudioObjectPropertyAddress changes[] = {
+            {kAudioLevelControlPropertyScalarValue, kAudioObjectPropertyScopeGlobal, 0},
+            {kAudioLevelControlPropertyDecibelValue, kAudioObjectPropertyScopeGlobal, 0}
+        };
+        host->PropertiesChanged(host, id + ODVolumeOffset, 2, changes);
+    }
+    if (muteChanged) {
+        const AudioObjectPropertyAddress change = {kAudioBooleanControlPropertyValue, kAudioObjectPropertyScopeGlobal, 0};
+        host->PropertiesChanged(host, id + ODMuteOffset, 1, &change);
     }
     return noErr;
 }
@@ -524,6 +618,9 @@ static OSStatus setData(AudioServerPlugInDriverRef self, AudioObjectID id, pid_t
         if (size != sizeof(CFTypeRef)) return kAudioHardwareBadPropertySizeError;
         return replaceRegistry(pid, *(const CFTypeRef *)data);
     }
+    if (address->mSelector == ODVolumeControlProperty) {
+        return syncVolume(id, pid, qualifierSize, qualifier, size, data);
+    }
 
     AudioObjectPropertyAddress changes[2] = {*address, *address};
     UInt32 changeCount = 0;
@@ -542,6 +639,7 @@ static OSStatus setData(AudioServerPlugInDriverRef self, AudioObjectID id, pid_t
                 if (!isfinite(value)) { result = kAudioHardwareIllegalOperationError; break; }
                 if (address->mSelector == kAudioLevelControlPropertyDecibelValue) value = powf(10, value / 20);
                 device->volume = fmaxf(0, fminf(value, 1));
+                ++device->volumeRevision;
                 changes[0].mSelector = kAudioLevelControlPropertyScalarValue;
                 changes[1].mSelector = kAudioLevelControlPropertyDecibelValue;
                 changeCount = 2;
@@ -549,7 +647,11 @@ static OSStatus setData(AudioServerPlugInDriverRef self, AudioObjectID id, pid_t
             break;
         case kAudioBooleanControlPropertyValue:
             if (size != sizeof(UInt32)) result = kAudioHardwareBadPropertySizeError;
-            else { device->mute = *(const UInt32 *)data != 0; changeCount = 1; }
+            else {
+                device->mute = *(const UInt32 *)data != 0;
+                ++device->muteRevision;
+                changeCount = 1;
+            }
             break;
         case kAudioDevicePropertyNominalSampleRate:
             if (size != sizeof(Float64) || *(const Float64 *)data != ODSampleRate) result = kAudioDeviceUnsupportedFormatError;

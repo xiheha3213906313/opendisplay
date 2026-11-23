@@ -83,10 +83,12 @@ receiver. UDP cannot cross the forward, so the cursor stays on TCP there.
 
 ### System audio
 
-Install the [OpenDisplay audio driver](../MacAudioDriver/README.md) on the Mac
-before connecting. The first Android receiver ready for audio automatically
+Use **Permissions → Audio Driver** on the Mac to install the
+[OpenDisplay audio driver](../MacAudioDriver/README.md). The first Android receiver ready for audio automatically
 plays the Mac's 48 kHz stereo output over Wi-Fi or USB. Use **System Settings →
 Sound → Output** on the Mac to choose an Android, speakers, or headphones.
+When supported, the Android output's volume and mute control the Android
+media stream. The Mac's software controls cover device and policy limits.
 
 ## Measured on a Pixel 10a (Android 17)
 

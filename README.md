@@ -280,8 +280,8 @@ remain available under those terms.)
 private API. The same risk applies to every virtual-display product.
 The capture/streaming pipeline itself uses only public APIs.
 
-**How do I send sound to Android?** Install the matching OpenDisplay audio
-driver on macOS 14 or later, then connect an audio-capable Android receiver
+**How do I send sound to Android?** On macOS 14 or later, use
+**Permissions → Audio Driver → Install…** in the sender, then connect an audio-capable Android receiver
 over Wi-Fi or USB. The first receiver ready for audio becomes the Mac's
 default output and plays 48 kHz stereo. Each connected receiver appears by
 name under **System Settings → Sound → Output**, where you can switch between
