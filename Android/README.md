@@ -83,10 +83,10 @@ receiver. UDP cannot cross the forward, so the cursor stays on TCP there.
 
 ### System audio
 
-In the Mac sender's Android session row, turn on **Play sound on this device**.
-The Mac sends 48 kHz stereo audio over the active Wi-Fi or USB connection and
-silences its local output. Turn off the switch to resume local playback. Both
-apps must include audio support and the Mac sender requires macOS 14 or later.
+Install the [OpenDisplay audio driver](../MacAudioDriver/README.md) on the Mac
+before connecting. The first Android receiver ready for audio automatically
+plays the Mac's 48 kHz stereo output over Wi-Fi or USB. Use **System Settings →
+Sound → Output** on the Mac to choose an Android, speakers, or headphones.
 
 ## Measured on a Pixel 10a (Android 17)
 

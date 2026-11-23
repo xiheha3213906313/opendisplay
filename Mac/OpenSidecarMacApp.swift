@@ -37,6 +37,10 @@ struct OpenSidecarMacApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        VirtualAudioOutputs.shared.shutdown()
+    }
+
     // Sparkle's standard updater. `startingUpdater: true` boots the updater
     // immediately so scheduled background checks (SUEnableAutomaticChecks)
     // run; the menu item drives manual "Check for Updates…". Held for the
@@ -120,8 +124,6 @@ final class DeviceSession: ObservableObject, Identifiable {
     let sender: MacSender
 
     @Published var status = "Starting…"
-    @Published var audioAvailable = false
-    @Published var audioEnabled = false
     @Published var audioStatus: String?
     @Published var framesSent = 0
     // The sender's start() threw: the pipeline is freed, only this row's
@@ -753,9 +755,7 @@ final class SenderController: ObservableObject {
             session.status = text
             Log.info("status[\(id)]: \(text)")
         }
-        sender.onAudioState = { [weak session] available, enabled, status in
-            session?.audioAvailable = available
-            session?.audioEnabled = enabled
+        sender.onAudioState = { [weak session] status in
             session?.audioStatus = status
         }
         sender.onHello = { [weak self, weak session] info in
@@ -1267,17 +1267,6 @@ struct SessionRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                if session.audioAvailable && !session.failed {
-                    Toggle("Play sound on this device", isOn: Binding(
-                        get: { session.audioEnabled },
-                        set: {
-                            session.audioEnabled = $0
-                            session.sender.setAudioEnabled($0)
-                        }
-                    ))
-                    .controlSize(.small)
-                    .help("Play this Mac’s system audio on Android and silence local output")
-                }
                 if let audioStatus = session.audioStatus {
                     Text(audioStatus).font(.caption).foregroundStyle(.secondary)
                 }

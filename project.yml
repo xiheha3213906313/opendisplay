@@ -160,6 +160,7 @@ targets:
       - Mac/CaptureSourceCheck.swift
       - Mac/AndroidUSBFunction.swift
       - Mac/AudioStream.swift
+      - Mac/AudioOutputRouting.swift
       - Mac/USBAccessory.swift
       - Mac/Log.swift
       - Mac/LogPolicies.swift

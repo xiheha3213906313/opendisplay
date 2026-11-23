@@ -723,8 +723,10 @@ sender's own display.
 Audio uses the existing length-prefixed connection on LAN and USB AOA.
 An Android receiver that supports playback includes the optional field
 `"audioFormat":"AUD1-s16le-48000-stereo"` in its `hello`. A sender must
-receive this offer on the current connection and have the user's opt-in
-before sending:
+receive this offer on the current connection before sending the playback
+request. The Mac sender uses this negotiation to publish a local Core Audio
+output device. macOS routes samples to the device selected by the user or
+by the sender's automatic output selection:
 
 ```json
 {"type":"audioStart","format":"AUD1-s16le-48000-stereo","id":"<UUID>"}
