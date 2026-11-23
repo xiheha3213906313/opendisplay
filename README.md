@@ -100,7 +100,7 @@ use case, mostly a 5K iMac next to an Apple silicon laptop.
 | Different Apple IDs, no account | ✅ | Same Apple ID for full quality | ✅ | ❌ (account) | ✅ | ✅ | ✅ |
 | Several receiving Macs | ✅ | ? | ? | ✅ | ✅ | ? | ? |
 | Keyboard and mouse at the receiving Mac | ❌ ([planned](https://github.com/peetzweg/opendisplay/issues/16)) | ❌ | ✅ | ✅ | ✅ | ? | ? |
-| Audio | ❌ | ✅ | ? | ? | ✅ | ✅ | ✅ |
+| Audio | ✅ Mac → Android | ✅ | ? | ? | ✅ | ✅ | ✅ |
 | Shut down the receiving Mac from the sender | ✅ over a cable | ? | ? | ? | ? | ? | ? |
 | iPhone and iPad as displays too | ✅ | ❌ | iPad only | ✅ | ❌ | ❌ | ❌ |
 
@@ -280,7 +280,13 @@ remain available under those terms.)
 private API. The same risk applies to every virtual-display product.
 The capture/streaming pipeline itself uses only public APIs.
 
-**Audio?** Out of scope for now.
+**How do I send sound to Android?** Connect the updated Mac sender (macOS 14
+or later) to the updated Android receiver over Wi-Fi or USB. Turn on
+**Play sound on this device** in the Android device's session row. It sends
+48 kHz stereo system audio and silences the Mac output when playback starts.
+Turning it off or disconnecting restores the Mac output. If the Mac's selected
+output cannot be silenced, the app shows the error and plays sound locally.
+See the [audio code attribution](Audio-attribution.md).
 
 ## Linux sender (beta)
 

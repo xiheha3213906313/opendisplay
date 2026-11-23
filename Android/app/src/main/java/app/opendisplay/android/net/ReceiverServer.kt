@@ -3,6 +3,8 @@ package app.opendisplay.android.net
 import android.os.SystemClock
 import android.util.Base64
 import app.opendisplay.android.Log
+import app.opendisplay.android.audio.AudioPlayer
+import app.opendisplay.android.protocol.AudioWire
 import app.opendisplay.android.protocol.ClockSync
 import app.opendisplay.android.protocol.Codec
 import app.opendisplay.android.protocol.CursorSequence
@@ -288,14 +290,18 @@ class ReceiverServer(
 
     // region Inbound control
 
-    private fun handleControl(payload: ByteArray) {
+    private fun handleControl(payload: ByteArray, session: Session) {
         val obj = try {
             JSONObject(String(payload, Charsets.UTF_8))
         } catch (_: Exception) {
             return // 6: unparseable control MUST be ignored
         }
         try {
-            dispatchControl(obj)
+            when (obj.optString("type")) {
+                "audioStart" -> session.startAudio(obj)
+                "audioStop" -> session.stopAudio(obj.optString("id"))
+                else -> dispatchControl(obj)
+            }
         } catch (e: Exception) {
             // A malformed field (a string where a number belongs) is the
             // sender's bug, never a reason to drop the session or crash.
@@ -372,6 +378,9 @@ class ReceiverServer(
 
     private inner class Session(val link: Link, private val initial: ByteArray?) {
         private val outbox = LinkedBlockingQueue<ByteArray>()
+        private val audioLock = Any()
+        private var audioID: String? = null
+        private var audio: AudioPlayer? = null
         @Volatile var isOpen = true
             private set
         @Volatile var lastReceive = SystemClock.elapsedRealtime()
@@ -394,6 +403,7 @@ class ReceiverServer(
         fun close() {
             if (!isOpen) return
             isOpen = false
+            stopAudio()
             outbox.offer(POISON)
             closeQuietly(link)
         }
@@ -403,6 +413,7 @@ class ReceiverServer(
             if (last != null && isOpen) {
                 send(last)
                 isOpen = false
+                stopAudio()
                 outbox.offer(POISON)
                 // The writer closes the link after the poison; don't wait long.
                 Thread {
@@ -412,6 +423,40 @@ class ReceiverServer(
             } else {
                 close()
             }
+        }
+
+        fun startAudio(request: JSONObject) {
+            val id = request.optString("id")
+            if (id.length != 36) return
+            synchronized(audioLock) {
+                if (!isOpen || current !== this || audioID == id) return
+                if (request.optString("format") != AudioWire.FORMAT) {
+                    sendAudioStatus(id, "failed")
+                    return
+                }
+                audio?.close()
+                audioID = id
+                audio = AudioPlayer { status ->
+                    synchronized(audioLock) {
+                        if (isOpen && current === this && audioID == id) {
+                            sendAudioStatus(id, status)
+                        }
+                    }
+                }.also { it.start() }
+            }
+        }
+
+        fun stopAudio(id: String? = null) {
+            synchronized(audioLock) {
+                if (id != null && id != audioID) return
+                audio?.close()
+                audio = null
+                audioID = null
+            }
+        }
+
+        private fun sendAudioStatus(id: String, status: String) {
+            send(Messages.simple("audioStatus").put("id", id).put("status", status))
         }
 
         private fun writeLoop() {
@@ -454,7 +499,12 @@ class ReceiverServer(
                 while (isOpen) {
                     val payload = Framing.readFrame(input) ?: break
                     lastReceive = SystemClock.elapsedRealtime()
-                    if (Demux.isControl(payload)) handleControl(payload) else listener.onVideoFrame(payload)
+                    if (!isOpen || current !== this) break
+                    when (Demux.kind(payload)) {
+                        Demux.Kind.CONTROL -> handleControl(payload, this)
+                        Demux.Kind.AUDIO -> synchronized(audioLock) { audio?.feed(payload) }
+                        Demux.Kind.VIDEO -> listener.onVideoFrame(payload)
+                    }
                 }
             } catch (e: SocketTimeoutException) {
                 Log.i(TAG, "read timed out")

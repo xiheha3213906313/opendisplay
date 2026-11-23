@@ -60,6 +60,14 @@ object Framing {
  * so the typed header planned for pv 4 is a one-function swap.
  */
 object Demux {
+    enum class Kind { AUDIO, CONTROL, VIDEO }
+
+    fun kind(payload: ByteArray): Kind = when {
+        AudioWire.isAudio(payload) -> Kind.AUDIO
+        isControl(payload) -> Kind.CONTROL
+        else -> Kind.VIDEO
+    }
+
     private const val MAX_CONTROL = 32768
 
     fun isControl(payload: ByteArray): Boolean {

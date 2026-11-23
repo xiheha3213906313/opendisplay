@@ -120,6 +120,9 @@ final class DeviceSession: ObservableObject, Identifiable {
     let sender: MacSender
 
     @Published var status = "Starting…"
+    @Published var audioAvailable = false
+    @Published var audioEnabled = false
+    @Published var audioStatus: String?
     @Published var framesSent = 0
     // The sender's start() threw: the pipeline is freed, only this row's
     // error text remains. A failed session must never swallow a fresh
@@ -750,6 +753,11 @@ final class SenderController: ObservableObject {
             session.status = text
             Log.info("status[\(id)]: \(text)")
         }
+        sender.onAudioState = { [weak session] available, enabled, status in
+            session?.audioAvailable = available
+            session?.audioEnabled = enabled
+            session?.audioStatus = status
+        }
         sender.onHello = { [weak self, weak session] info in
             guard let self, let session else { return }
             session.deviceID = info.id
@@ -1259,6 +1267,20 @@ struct SessionRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                if session.audioAvailable && !session.failed {
+                    Toggle("Play sound on this device", isOn: Binding(
+                        get: { session.audioEnabled },
+                        set: {
+                            session.audioEnabled = $0
+                            session.sender.setAudioEnabled($0)
+                        }
+                    ))
+                    .controlSize(.small)
+                    .help("Play this Mac’s system audio on Android and silence local output")
+                }
+                if let audioStatus = session.audioStatus {
+                    Text(audioStatus).font(.caption).foregroundStyle(.secondary)
+                }
             }
             Spacer()
             // A live session recovers on its own (liveness watchdog, redial,

@@ -220,6 +220,9 @@ their code so the swap is cheap, and MUST NOT build features that depend on
 the heuristic's edge cases (for example, deliberately sending binary
 control data to route it to the video path).
 
+Receivers offering audio check the negotiated `AUD1` prefix (section 6.8)
+before applying the JSON/Annex B heuristic.
+
 ## 5. Video
 
 The implicit legacy video stream is **H.264 Annex B**. A sender may select
@@ -714,6 +717,41 @@ change for any of this: `streamConfig` announces the stream.
 
 In mirror sessions `panel` only bounds the stream; the desktop is the
 sender's own display.
+
+### 6.8 Android system audio
+
+Audio uses the existing length-prefixed connection on LAN and USB AOA.
+An Android receiver that supports playback includes the optional field
+`"audioFormat":"AUD1-s16le-48000-stereo"` in its `hello`. A sender must
+receive this offer on the current connection and have the user's opt-in
+before sending:
+
+```json
+{"type":"audioStart","format":"AUD1-s16le-48000-stereo","id":"<UUID>"}
+```
+
+The receiver answers with `{"type":"audioStatus","id":"<UUID>","status":"ready"}`
+after opening the playback device. It answers with `status:"failed"` if
+initialization or playback fails. The sender only sends PCM after `ready`
+for its current request ID. A sender sends `{"type":"audioStop","id":"<UUID>"}`
+to end the request. A receiver retires playback on a matching stop, a valid
+new request, or disconnect. A reconnect requires a fresh offer and request
+ID. An old receiver that omits the offer receives video and regular control
+messages only. The protocol version remains 3.
+
+Each audio payload uses this layout inside the existing outer length prefix:
+
+```text
+"AUD1" | u8 version=1 | u8 channels=2 | u16be rate=48000 | u32be frames | stereo S16LE PCM
+```
+
+`frames` is 1–960 (at most 20 ms). The PCM is interleaved left/right, with
+exactly four bytes per frame. After recognizing `AUD1`, the receiver drops
+invalid payloads and payloads outside a playback request. The sender skips
+stale captured samples and caps outstanding audio sends separately from
+video. The receiver limits queued PCM to four payloads and discards expired
+audio as it drains the queue. TCP congestion can still delay an audio frame
+behind a video frame already submitted to the connection.
 
 ## 7. Coordinate spaces and units
 

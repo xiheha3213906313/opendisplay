@@ -57,6 +57,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     // Fired on every hello — carries the receiver's install id so the
     // controller can deduplicate USB/WiFi sessions to the same device.
     @MainActor var onHello: ((PhoneInfo) -> Void)?
+    @MainActor var onAudioState: ((_ available: Bool, _ enabled: Bool, _ status: String?) -> Void)?
     // Fired when the user stopped the capture from the system UI (menu-bar
     // recording indicator / "Stop Extending"). The controller disconnects
     // the session — teardown plus auto-connect opt-out — so the app honors
@@ -76,6 +77,18 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private var virtualDisplay: VirtualDisplay?
     private let queue = DispatchQueue(label: "sender.video")
     private let startCode: [UInt8] = [0, 0, 0, 1]
+
+    // Audio negotiation, capture and sends are ordered on the connection queue.
+    private var audioOffered = false
+    private var audioEnabled = false
+    private var audioDisplay: SCDisplay?
+    private var audioRequest: UUID?
+    private var audioCapture: SystemAudioCapture?
+    private var audioMuted = false
+    private var audioDeadline = DispatchTime.distantFuture
+    private var pendingAudioSends = 0
+    private var audioSent = 0
+    private var audioDropped = 0
 
     // The dial target. Written on `queue` only (after init): the controller
     // can migrate a live session between transports via switchTransport.
@@ -1389,6 +1402,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         queue.async {
             self.captureRecoveryFailures = 0
             self.waitingForConsole = false
+            guard self.stream === stream, !self.stopped else { return }
+            self.audioDisplay = display
+            self.beginAudioIfReady()
         }
         Log.info("capture started: \(pixelsWide)x\(pixelsHigh) display \(display.displayID) generation \(generation) mode \(mode.rawValue) localCursor=\(localCursor)")
         let kind = lastHello?.kind ?? "device"
@@ -1397,6 +1413,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     func stop() {
         stopped = true
+        queue.async { self.resetAudioLink() }
         invalidateCapturePipeline(discardingLastFrame: true)
         stopCursorPositionEcho()
         cursorImageTimer?.cancel()
@@ -1449,6 +1466,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             // session ends like any other disconnect instead of dialing
             // a dead transport forever.
             self.disconnectedSince = Date()
+            self.resetAudioLink()
             self.connectionReady = false
             self.currentPathDirectLink = false   // the new transport re-classifies
             self.dialGeneration += 1   // a dial still in flight must not adopt
@@ -1472,6 +1490,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     /// Declare the device gone and end the session (must be called on `queue`).
     private func reportGone(_ reason: String) {
         guard !goneReported, !stopped else { return }
+        resetAudioLink()
         goneReported = true
         Log.info(reason)
         Task { @MainActor in self.onDisconnected?() }
@@ -1541,6 +1560,12 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         // A retired stream commonly reports its stop after the replacement is
         // already live. It must not tear down that replacement (#203).
         guard stream === self.stream else { return }
+        queue.async { [weak self] in
+            guard let self, self.stream === stream else { return }
+            self.audioDisplay = nil
+            self.stopAudio(notifyPeer: true)
+            self.publishAudioState(self.audioEnabled ? "Waiting for screen capture…" : nil)
+        }
         Log.info("stream stopped with error: \(error)")
         // The user stopped this capture from the system UI (the menu bar's
         // recording indicator / "Stop Extending"). That is a disconnect, not
@@ -1699,6 +1724,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     /// Bookkeeping shared by both transports once a connection is live.
     private func becomeReady(_ conn: NWConnection) {
+        resetAudioLink()
         Log.info("connection ready to \(endpointName)")
         connectionGeneration &+= 1
         let readyGeneration = connectionGeneration
@@ -1931,6 +1957,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         // callbacks deliver on `queue` and carry the old connection generation,
         // so anything already in flight is either sent on WiFi before this
         // method runs or discarded after the generation advances below.
+        resetAudioLink()
         connectionReady = false
         // Detach the old connection's handler BEFORE cancelling: its
         // .cancelled callback arrives after becomeReady below and would
@@ -2154,6 +2181,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private func scheduleReconnect() {
         guard !stopped else { return }
+        resetAudioLink()
         if everConnected {
             if let since = disconnectedSince {
                 if Date().timeIntervalSince(since) > disconnectGraceSeconds {
@@ -2213,6 +2241,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private func scheduleWatchdog() {
         queue.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             guard let self, !self.stopped else { return }
+            if self.audioRequest != nil, DispatchTime.now() >= self.audioDeadline {
+                self.failAudio(self.audioCapture == nil
+                    ? "Android audio did not become ready." : "System audio capture did not start.")
+            }
+            if self.audioMuted { SystemAudioMute.shared.checkOutput() }
             if self.connectionReady, Date().timeIntervalSince(self.lastReceived) > 5 {
                 // A suspended receiver app (user switched apps) goes silent
                 // like this while its kernel still accepts redials — the
@@ -2489,6 +2522,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private func receiveControl(on conn: NWConnection) {
         conn.receive(minimumIncompleteLength: 4, maximumLength: 4) { [weak self] data, _, _, error in
             guard let self, error == nil, let data, data.count == 4 else {
+                if let self, self.connection === conn { self.resetAudioLink() }
                 if let error {
                     Log.info("control receive ended: \(error)")
                     // A receive error on the live connection is fatal to it.
@@ -2507,7 +2541,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             let len = Int(UInt32(bigEndian: data.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }))
             guard len > 0, len < 1 << 20 else { return }
             conn.receive(minimumIncompleteLength: len, maximumLength: len) { [weak self] payload, _, _, error in
-                guard let self, error == nil, let payload, payload.count == len else { return }
+                guard let self, self.connection === conn else { return }
+                guard error == nil, let payload, payload.count == len else {
+                    self.resetAudioLink()
+                    return
+                }
                 self.handleControl(payload)
                 self.receiveControl(on: conn)
             }
@@ -2585,6 +2623,18 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 // message types. Sending on every hello is idempotent — the
                 // phone dedupes by content.
                 sendWelcome()
+                let offered = AudioWire.isOffered(by: obj)
+                if audioOffered != offered {
+                    audioOffered = offered
+                    if offered {
+                        publishAudioState()
+                        beginAudioIfReady()
+                    } else {
+                        failAudio("The receiver no longer offers audio playback.")
+                    }
+                } else if !offered, audioEnabled {
+                    failAudio("This receiver does not offer audio playback.")
+                }
                 if let selected = activeStreamConfigurationSnapshot, peerAcceptsActiveCodec {
                     sendStreamConfiguration(selected)
                 }
@@ -2599,6 +2649,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                     if stream != nil { scheduleReconfigure() } else { _ = noteSelectionChange() }
                 }
             }
+        case "audioStatus":
+            handleAudioStatus(obj)
         case "touch":
             if let phase = obj["phase"] as? String,
                let x = obj["x"] as? Double,
@@ -3276,11 +3328,148 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     /// Send on a connection whose `.ready` callback is currently being
     /// handled, before `connectionReady` opens the video path.
     private func sendJSONFrame(_ json: String, on connection: NWConnection) {
-        let payload = Data(json.utf8)
+        connection.send(content: framed(Data(json.utf8)), completion: .contentProcessed { _ in })
+    }
+
+    private func framed(_ payload: Data) -> Data {
         var header = UInt32(payload.count).bigEndian
         var frame = Data(bytes: &header, count: 4)
         frame.append(payload)
-        connection.send(content: frame, completion: .contentProcessed { _ in })
+        return frame
+    }
+
+    // MARK: - Android system audio
+
+    func setAudioEnabled(_ enabled: Bool) {
+        queue.async {
+            guard !self.stopped else { return }
+            self.audioEnabled = enabled && self.audioOffered
+            if self.audioEnabled {
+                self.publishAudioState("Preparing Android audio…")
+                self.beginAudioIfReady()
+            } else {
+                self.stopAudio(notifyPeer: true)
+                self.publishAudioState()
+            }
+        }
+    }
+
+    private func publishAudioState(_ status: String? = nil) {
+        let offered = audioOffered
+        let enabled = audioEnabled
+        DispatchQueue.main.async { self.onAudioState?(offered, enabled, status) }
+    }
+
+    private func beginAudioIfReady() {
+        guard !stopped, connectionReady, audioOffered, audioEnabled,
+              audioRequest == nil, audioDisplay != nil else { return }
+        let id = UUID()
+        audioRequest = id
+        audioDeadline = .now() + .seconds(4)
+        publishAudioState("Preparing Android audio…")
+        sendJSONFrame("{\"type\":\"audioStart\",\"id\":\"\(id.uuidString)\",\"format\":\"\(AudioWire.format)\"}")
+    }
+
+    private func handleAudioStatus(_ message: [String: Any]) {
+        guard !stopped, audioEnabled, connectionReady, let request = audioRequest,
+              let id = message["id"] as? String, UUID(uuidString: id) == request else { return }
+        switch message["status"] as? String {
+        case "ready":
+            guard audioCapture == nil, let display = audioDisplay else { return }
+            audioDeadline = .now() + .seconds(5)
+            let capture = SystemAudioCapture(queue: queue, onStarted: { [weak self] in
+                guard let self, self.audioRequest == request else { return }
+                self.audioDeadline = .distantFuture
+                if !self.audioMuted { self.publishAudioState("Waiting for system audio…") }
+            }, onPCM: { [weak self] pcm in
+                self?.sendAudio(pcm, for: request)
+            }, onFailure: { [weak self] error in
+                guard let self, self.audioRequest == request else { return }
+                self.failAudio("System audio capture failed: \(error.localizedDescription)")
+            })
+            audioCapture = capture
+            do {
+                try capture.start(display: display)
+            } catch {
+                failAudio("System audio capture failed: \(error.localizedDescription)")
+            }
+        case "failed":
+            failAudio("Android could not play system audio.")
+        default:
+            break
+        }
+    }
+
+    private func sendAudio(_ pcm: Data, for request: UUID) {
+        guard !stopped, audioRequest == request, connectionReady, let conn = connection else { return }
+        let blockSize = AudioWire.maxFrames * AudioWire.bytesPerFrame
+        // Keep the newest tail of an unusually large capture buffer. Live
+        // audio does not wait behind video sends or queue for retransmission.
+        let end = pcm.endIndex
+        let maxPendingAudioSends = 4
+        var offset = max(pcm.startIndex, end - blockSize * maxPendingAudioSends)
+        while offset < end {
+            let next = min(offset + blockSize, end)
+            defer { offset = next }
+            guard pendingAudioSends < maxPendingAudioSends, pendingSends < maxPendingSends,
+                  let payload = AudioWire.pack(pcm[offset..<next]) else {
+                audioDropped += 1
+                continue
+            }
+            if !audioMuted {
+                audioMuted = SystemAudioMute.shared.claim(request) { [weak self] in
+                    guard let self else { return }
+                    self.queue.async {
+                        guard self.audioRequest == request else { return }
+                        self.failAudio("The selected Mac output could not be silenced.")
+                    }
+                }
+                guard audioMuted else {
+                    failAudio("The selected Mac output could not be silenced.")
+                    return
+                }
+                publishAudioState("Playing on Android")
+            }
+            pendingAudioSends += 1
+            conn.send(content: framed(payload), completion: .contentProcessed { [weak self] error in
+                guard let self, self.connection === conn, self.audioRequest == request else { return }
+                self.pendingAudioSends -= 1
+                if error == nil {
+                    self.audioSent += 1
+                } else {
+                    self.failAudio("The connection could not send system audio.")
+                }
+            })
+        }
+    }
+
+    private func failAudio(_ status: String) {
+        Log.info("audio: \(status)")
+        audioEnabled = false
+        stopAudio(notifyPeer: true)
+        publishAudioState(status)
+    }
+
+    private func stopAudio(notifyPeer: Bool) {
+        guard let id = audioRequest else { return }
+        audioRequest = nil
+        audioCapture?.stop()
+        audioCapture = nil
+        if audioMuted { SystemAudioMute.shared.release(id) }
+        audioMuted = false
+        if notifyPeer {
+            sendJSONFrame("{\"type\":\"audioStop\",\"id\":\"\(id.uuidString)\"}")
+        }
+        Log.info("audio: sent=\(audioSent) dropped=\(audioDropped)")
+        pendingAudioSends = 0
+        audioSent = 0
+        audioDropped = 0
+    }
+
+    private func resetAudioLink() {
+        stopAudio(notifyPeer: false)
+        audioOffered = false
+        publishAudioState(audioEnabled ? "Waiting for the receiver…" : nil)
     }
 
     /// VideoToolbox calls back on its own thread. Return to the sender queue so
@@ -3304,9 +3493,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             needsKeyframe = true   // the frame after the confirming hello must be an IDR
             return
         }
-        var header = UInt32(payload.count).bigEndian
-        var frame = Data(bytes: &header, count: 4)
-        frame.append(payload)
+        let frame = framed(payload)
         pendingSends += 1
         connection.send(content: frame, completion: .contentProcessed { [weak self] error in
             guard let self else { return }
@@ -3372,7 +3559,12 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         frameRateLimiter = FrameRateLimiter(framesPerSecond: 60)
         pipelineLock.unlock()
         captureDisplayID = 0
-        queue.async { self.captureSourceCheck = CaptureSourceCheck() }
+        queue.async {
+            self.captureSourceCheck = CaptureSourceCheck()
+            self.audioDisplay = nil
+            self.stopAudio(notifyPeer: true)
+            self.publishAudioState(self.audioEnabled ? "Waiting for screen capture…" : nil)
+        }
         if discardingLastFrame {
             lastPixelBuffer = nil
             lastCaptureAt = .distantPast

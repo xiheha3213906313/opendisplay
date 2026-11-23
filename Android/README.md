@@ -69,8 +69,9 @@ Dev") next to a release build.
 **Wi-Fi:** open the app on the Android device and pick it in the Mac app.
 Both need to be on the same network.
 
-**USB:** the Mac sender has no ADB support yet. Forward the receiver's port
-and point the sender at it by hand:
+**USB:** connect the Android device with a data cable and select its USB entry
+in the Mac sender. Accept the accessory prompt on Android if it appears. For
+development you can also forward the receiver's port with ADB:
 
 ```sh
 adb forward tcp:9100 tcp:9000
@@ -79,6 +80,13 @@ open "OpenDisplay.app" --args -host 127.0.0.1 -port 9100
 
 `adb forward` (not `reverse`) is the right direction: the sender dials the
 receiver. UDP cannot cross the forward, so the cursor stays on TCP there.
+
+### System audio
+
+In the Mac sender's Android session row, turn on **Play sound on this device**.
+The Mac sends 48 kHz stereo audio over the active Wi-Fi or USB connection and
+silences its local output. Turn off the switch to resume local playback. Both
+apps must include audio support and the Mac sender requires macOS 14 or later.
 
 ## Measured on a Pixel 10a (Android 17)
 
