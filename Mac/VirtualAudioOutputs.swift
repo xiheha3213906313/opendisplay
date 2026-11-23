@@ -42,7 +42,7 @@ final class AudioOutputMailbox {
 final class VirtualAudioOutputs {
     static let shared = VirtualAudioOutputs()
 
-    private static let protocolVersion = 1
+    private static let protocolVersion = 2
     private static let versionProperty: AudioObjectPropertySelector = 0x6f647672 // odvr
     private static let registryProperty: AudioObjectPropertySelector = 0x6f647267 // odrg
     private static let pcmProperty: AudioObjectPropertySelector = 0x6f647063 // odpc
@@ -69,6 +69,7 @@ final class VirtualAudioOutputs {
 
     private let queue = DispatchQueue(label: "sender.audio-outputs")
     private let system = AudioObjectID(kAudioObjectSystemObject)
+    private let registryToken = UUID().uuidString as CFString
     private let heartbeat: DispatchSourceTimer
     private let pcmTimer: DispatchSourceTimer
     private var audioParticipants = Set<UUID>()
@@ -198,7 +199,7 @@ final class VirtualAudioOutputs {
     private func drainPCM() {
         for route in routes {
             guard let object = objectIDs[route.uid],
-                  let pcm = cfProperty(object, Self.pcmProperty) as? Data, !pcm.isEmpty,
+                  let pcm = cfProperty(object, Self.pcmProperty, qualifier: registryToken) as? Data, !pcm.isEmpty,
                   let payload = AudioWire.packHALSamples(pcm) else { continue }
             route.mailbox.offer(payload)
         }
@@ -305,7 +306,7 @@ final class VirtualAudioOutputs {
     }
 
     private func writeRegistry(_ entries: [Route], on plugin: AudioObjectID) -> Bool {
-        let value = entries.map { ["uid": $0.uid, "name": $0.name] } as CFArray
+        let value = ["token": registryToken, "devices": entries.map { ["uid": $0.uid, "name": $0.name] }] as CFDictionary
         var arg = Unmanaged.passUnretained(value)
         var address = address(Self.registryProperty)
         let result = AudioObjectSetPropertyData(plugin, &address, 0, nil, UInt32(MemoryLayout.size(ofValue: arg)), &arg)
@@ -332,11 +333,20 @@ final class VirtualAudioOutputs {
         return result == noErr ? Array(objects.prefix(Int(size) / width)) : []
     }
 
-    private func cfProperty(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> CFTypeRef? {
+    private func cfProperty(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
+                            qualifier: CFString? = nil) -> CFTypeRef? {
         var address = address(selector)
         var value: Unmanaged<CFTypeRef>?
         var size = UInt32(MemoryLayout.size(ofValue: value))
-        guard AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value) == noErr else { return nil }
+        let status: OSStatus
+        if let qualifier {
+            var arg = Unmanaged.passUnretained(qualifier)
+            status = AudioObjectGetPropertyData(object, &address, UInt32(MemoryLayout.size(ofValue: arg)),
+                                                &arg, &size, &value)
+        } else {
+            status = AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value)
+        }
+        guard status == noErr else { return nil }
         return value?.takeRetainedValue()
     }
 

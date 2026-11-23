@@ -5,24 +5,19 @@
  */
 #include <CoreAudio/AudioServerPlugIn.h>
 #include <CoreAudio/HostTime.h>
-#include <Security/Security.h>
 #include <dispatch/dispatch.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdbool.h>
-#include <unistd.h>
 #include "Loopback.h"
 
-#ifndef OD_APP_ID
-#define OD_APP_ID "com.peetzweg.opensidecar.mac.debug"
-#endif
 #ifndef OD_BUNDLE_ID
 #define OD_BUNDLE_ID "app.opendisplay.audio.driver.debug"
 #endif
 
 enum {
     ODVersionProperty = 'odvr', ODRegistryProperty = 'odrg', ODPCMProperty = 'odpc',
-    ODProtocolVersion = 1, ODDeviceLimit = 16, ODClockPeriod = 512,
+    ODProtocolVersion = 2, ODDeviceLimit = 16, ODClockPeriod = 512,
     ODStreamOffset = 1, ODVolumeOffset = 2, ODMuteOffset = 3, ODObjectStride = 4
 };
 
@@ -49,6 +44,7 @@ static pthread_mutex_t stateLock = PTHREAD_MUTEX_INITIALIZER;
 static ODDevice devices[ODDeviceLimit];
 static AudioObjectID nextID = 16;
 static pid_t registryOwner;
+static CFStringRef registryToken;
 static uint64_t renewTime;
 static dispatch_source_t expiryTimer;
 static double ticksPerFrame;
@@ -81,6 +77,20 @@ static void retireDevice(ODDevice *device) {
     device->name = NULL;
 }
 
+static void releaseLease(void) {
+    if (registryToken) CFRelease(registryToken);
+    registryToken = NULL;
+    registryOwner = 0;
+}
+
+// HAL supplies the originating PID for some calls and zero for requests
+// the host makes on behalf of a client. In either case the client must
+// present the private, randomly generated registry token.
+static bool ownsLease(pid_t pid, CFStringRef token) {
+    return registryToken && token && CFEqual(registryToken, token) &&
+        (!registryOwner || !pid || registryOwner == pid);
+}
+
 static ODDevice *availableSlot(CFStringRef uid) {
     ODDevice *fallback = NULL;
     for (size_t i = 0; i < ODDeviceLimit; ++i) {
@@ -93,7 +103,7 @@ static ODDevice *availableSlot(CFStringRef uid) {
 }
 
 static bool expireOwner(uint64_t now) {
-    if (!registryOwner || now - renewTime < leaseTicks) return false;
+    if (!registryToken || now - renewTime < leaseTicks) return false;
     bool changed = false;
     for (size_t i = 0; i < ODDeviceLimit; ++i) {
         if (atomic_load(&devices[i].visible)) {
@@ -101,7 +111,7 @@ static bool expireOwner(uint64_t now) {
             changed = true;
         }
     }
-    registryOwner = 0;
+    releaseLease();
     return changed;
 }
 
@@ -145,39 +155,13 @@ static OSStatus initialize(AudioServerPlugInDriverRef self, AudioServerPlugInHos
     return noErr;
 }
 
-static bool canPublish(pid_t pid) {
-#ifdef OD_HAL_TEST
-    return pid == getpid();
-#else
-    if (pid <= 0) return false;
-    CFNumberRef number = CFNumberCreate(NULL, kCFNumberIntType, &pid);
-    const void *keys[] = {kSecGuestAttributePid};
-    const void *values[] = {number};
-    CFDictionaryRef attributes = CFDictionaryCreate(NULL, keys, values, 1,
-        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    SecCodeRef client = NULL;
-    SecRequirementRef requirement = NULL;
-#ifdef OD_TEAM_ID
-    CFStringRef rule = CFSTR("anchor apple generic and identifier \"" OD_APP_ID
-                            "\" and certificate leaf[subject.OU] = \"" OD_TEAM_ID "\"");
-#else
-    // The local, ad-hoc Debug build is a separate plug-in and app identity.
-    CFStringRef rule = CFSTR("identifier \"" OD_APP_ID "\"");
-#endif
-    const bool allowed = SecCodeCopyGuestWithAttributes(NULL, attributes, kSecCSDefaultFlags, &client) == errSecSuccess
-        && SecRequirementCreateWithString(rule, kSecCSDefaultFlags, &requirement) == errSecSuccess
-        && SecCodeCheckValidity(client, kSecCSDefaultFlags, requirement) == errSecSuccess;
-    if (requirement) CFRelease(requirement);
-    if (client) CFRelease(client);
-    CFRelease(attributes);
-    CFRelease(number);
-    return allowed;
-#endif
-}
-
 static OSStatus replaceRegistry(pid_t pid, CFTypeRef value) {
-    if (!value || CFGetTypeID(value) != CFArrayGetTypeID()) return kAudioHardwareIllegalOperationError;
-    CFArrayRef registry = value;
+    if (!value || CFGetTypeID(value) != CFDictionaryGetTypeID()) return kAudioHardwareIllegalOperationError;
+    CFDictionaryRef request = value;
+    CFStringRef token = CFDictionaryGetValue(request, CFSTR("token"));
+    CFArrayRef registry = CFDictionaryGetValue(request, CFSTR("devices"));
+    if (!token || CFGetTypeID(token) != CFStringGetTypeID() || CFStringGetLength(token) != 36 ||
+        !registry || CFGetTypeID(registry) != CFArrayGetTypeID()) return kAudioHardwareIllegalOperationError;
     const CFIndex count = CFArrayGetCount(registry);
     if (count > ODDeviceLimit) return kAudioHardwareIllegalOperationError;
     CFStringRef uids[ODDeviceLimit];
@@ -201,7 +185,7 @@ static OSStatus replaceRegistry(pid_t pid, CFTypeRef value) {
     const uint64_t now = AudioGetCurrentHostTime();
     bool changed = expireOwner(now);
     OSStatus result = noErr;
-    if ((registryOwner && registryOwner != pid) || (!registryOwner && !canPublish(pid))) {
+    if (registryToken && !ownsLease(pid, token)) {
         result = kAudioDevicePermissionsError;
         goto done;
     }
@@ -255,7 +239,12 @@ static OSStatus replaceRegistry(pid_t pid, CFTypeRef value) {
         atomic_store(&device->visible, true);
         changed = true;
     }
-    registryOwner = count ? pid : 0;
+    if (!count) {
+        releaseLease();
+    } else if (!registryToken) {
+        registryToken = CFRetain(token);
+        registryOwner = pid;
+    }
     renewTime = now;
 done:
     pthread_mutex_unlock(&stateLock);
@@ -455,13 +444,14 @@ static OSStatus property(AudioObjectID id, pid_t pid, const AudioObjectPropertyA
     case kAudioDevicePropertyZeroTimeStampPeriod: VALUE(UInt32, ODClockPeriod);
     case kAudioObjectPropertyCustomPropertyInfoList: {
         const AudioServerPlugInCustomPropertyInfo info = {
-            ODPCMProperty, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, kAudioServerPlugInCustomPropertyDataTypeNone
+            ODPCMProperty, kAudioServerPlugInCustomPropertyDataTypeCFPropertyList, kAudioServerPlugInCustomPropertyDataTypeCFString
         };
         VALUE(AudioServerPlugInCustomPropertyInfo, info);
     }
     case ODPCMProperty: {
         if (!out) { *size = sizeof(CFTypeRef); return noErr; }
-        if (pid <= 0 || pid != registryOwner) return kAudioDevicePermissionsError;
+        if (!qualifier || qualifierSize != sizeof(CFStringRef) ||
+            !ownsLease(pid, *(const CFStringRef *)qualifier)) return kAudioDevicePermissionsError;
         if (capacity < sizeof(CFTypeRef)) return kAudioHardwareBadPropertySizeError;
         const uint64_t now = AudioGetCurrentHostTime();
         float samples[ODMaxFrames * ODChannels];

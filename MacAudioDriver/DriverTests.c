@@ -22,6 +22,8 @@ static AudioServerPlugInDriverRef driver;
 static const AudioObjectPropertyAddress registryAddress = {'odrg', kAudioObjectPropertyScopeGlobal, 0};
 static const AudioObjectPropertyAddress pcmAddress = {'odpc', kAudioObjectPropertyScopeGlobal, 0};
 static const AudioObjectPropertyAddress deviceListAddress = {kAudioPlugInPropertyDeviceList, kAudioObjectPropertyScopeGlobal, 0};
+static CFStringRef ownerToken = CFSTR("8710537E-9C8D-4693-9BFF-AC613B1539B9");
+static CFStringRef otherToken = CFSTR("32A25DBB-EA62-4920-8AF4-3C67AEB44C4E");
 
 static CFDictionaryRef output(CFStringRef uid, CFStringRef name) {
     const void *keys[] = {CFSTR("uid"), CFSTR("name")};
@@ -29,10 +31,15 @@ static CFDictionaryRef output(CFStringRef uid, CFStringRef name) {
     return CFDictionaryCreate(NULL, keys, values, 2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 }
 
-static OSStatus publish(const void **items, CFIndex count, pid_t pid) {
+static OSStatus publish(const void **items, CFIndex count, pid_t pid, CFStringRef token) {
     CFArrayRef list = CFArrayCreate(NULL, items, count, &kCFTypeArrayCallBacks);
+    const void *keys[] = {CFSTR("token"), CFSTR("devices")};
+    const void *values[] = {token, list};
+    CFDictionaryRef request = CFDictionaryCreate(NULL, keys, values, 2,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     OSStatus status = (*driver)->SetPropertyData(driver, kAudioObjectPlugInObject, pid,
-        &registryAddress, 0, NULL, sizeof(list), &list);
+        &registryAddress, 0, NULL, sizeof(request), &request);
+    CFRelease(request);
     CFRelease(list);
     return status;
 }
@@ -50,16 +57,16 @@ static void writeMix(AudioObjectID device, float *packet, UInt32 frames) {
         kAudioServerPlugInIOOperationWriteMix, frames, &cycle, packet, NULL) == noErr);
 }
 
-static CFDataRef readPCM(AudioObjectID device, pid_t pid, OSStatus expected) {
+static CFDataRef readPCM(AudioObjectID device, pid_t pid, CFStringRef token, OSStatus expected) {
     CFDataRef data = NULL;
     UInt32 size = 0;
     assert((*driver)->GetPropertyData(driver, device, pid, &pcmAddress,
-                                      0, NULL, sizeof(data), &size, &data) == expected);
+                                      sizeof(token), &token, sizeof(data), &size, &data) == expected);
     return data;
 }
 
 static void assertSamples(AudioObjectID device, const float *samples, size_t length) {
-    CFDataRef data = readPCM(device, getpid(), noErr);
+    CFDataRef data = readPCM(device, getpid(), ownerToken, noErr);
     assert((size_t)CFDataGetLength(data) == length * sizeof(*samples));
     if (length) assert(!memcmp(CFDataGetBytePtr(data), samples, length * sizeof(*samples)));
     CFRelease(data);
@@ -74,12 +81,13 @@ int main(void) {
         output(CFSTR("app.opendisplay.audio.driver.debug.a"), CFSTR("First Android")),
         output(CFSTR("app.opendisplay.audio.driver.debug.b"), CFSTR("Second Android"))
     };
-    assert(publish(items, 2, getpid() + 1) == kAudioDevicePermissionsError);
-    assert(publish(items, 2, getpid()) == noErr && list(ids, 2) == 2);
+    assert(publish(items, 2, getpid(), ownerToken) == noErr && list(ids, 2) == 2);
+    assert(publish(items, 2, getpid() + 1, ownerToken) == kAudioDevicePermissionsError);
+    assert(publish(items, 2, 0, otherToken) == kAudioDevicePermissionsError);
     const AudioObjectID first = ids[0], second = ids[1];
     for (int i = 0; i < 100 && atomic_load(&listChanges) == 0; ++i) usleep(1000);
     assert(first != second && listChanges == 1);
-    assert(publish(items, 2, getpid()) == noErr && list(ids, 2) == 2 && listChanges == 1);
+    assert(publish(items, 2, 0, ownerToken) == noErr && list(ids, 2) == 2 && listChanges == 1);
     assert(first == ids[0] && second == ids[1]);
     assert((*driver)->StartIO(driver, first, 1) == noErr);
     assert((*driver)->StartIO(driver, second, 1) == noErr);
@@ -88,7 +96,9 @@ int main(void) {
     float right[] = {0, .25f, 0, -.25f};
     writeMix(first, left, 2);
     writeMix(second, right, 2);
-    assert(readPCM(first, getpid() + 1, kAudioDevicePermissionsError) == NULL);
+    assert(readPCM(first, getpid() + 1, ownerToken, kAudioDevicePermissionsError) == NULL);
+    assert(readPCM(first, 0, otherToken, kAudioDevicePermissionsError) == NULL);
+    assert(readPCM(first, 0, NULL, kAudioDevicePermissionsError) == NULL);
     assertSamples(second, right, 4);
     assertSamples(first, left, 4);
     assertSamples(first, NULL, 0);
@@ -108,9 +118,9 @@ int main(void) {
     assertSamples(second, NULL, 0);
 
     writeMix(first, left, 2);
-    assert(publish(items + 1, 1, getpid()) == noErr && list(ids, 2) == 1 && ids[0] == second);
+    assert(publish(items + 1, 1, getpid(), ownerToken) == noErr && list(ids, 2) == 1 && ids[0] == second);
     assert((*driver)->StopIO(driver, first, 1) == noErr);
-    assert(publish(items, 2, getpid()) == noErr && list(ids, 2) == 2);
+    assert(publish(items, 2, getpid(), ownerToken) == noErr && list(ids, 2) == 2);
     AudioObjectID newFirst = ids[0] == second ? ids[1] : ids[0];
     assert(newFirst != first);
     assertSamples(newFirst, NULL, 0);

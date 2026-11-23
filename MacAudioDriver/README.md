@@ -32,14 +32,16 @@ authorization, then restart.
 
 From the checkout, run `bash MacAudioDriver/test.sh` for the driver tests and
 `bash MacAudioDriver/build-package.sh debug` for a local Debug installer in
-`build/audio-driver`. Use `release` with the sender's `DEVELOPMENT_TEAM`, a
+`build/audio-driver`. Use `release` with a
 `AUDIO_DRIVER_SIGNING_IDENTITY` (Developer ID Application), and a
 `AUDIO_INSTALLER_SIGNING_IDENTITY` (Developer ID Installer). Notarize the
 signed installer before public distribution.
 
+For local Debug testing, `bash MacAudioDriver/build-package.sh debug build/audio-driver --reload-audio`
+builds an installer that briefly restarts Core Audio after installation.
+
 The app and driver use versioned HAL custom properties for the registry and
-PCM. Only the app that owns the registry can drain its audio. Each device
-has an independent bounded buffer, and a registry heartbeat retires devices
-after the app stops responding. The macOS release driver checks the
-publisher's bundle identity and signing team. The ad-hoc Debug driver
-accepts the separate Debug sender identity for local development.
+PCM. The sender presents a private, random lease token for registry changes
+and PCM reads. The driver also checks the originating PID when HAL supplies
+it. Each device has an independent bounded buffer, and a registry heartbeat
+retires devices after the app stops responding.
