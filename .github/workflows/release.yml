@@ -273,15 +273,13 @@ jobs:
 
   # Android receiver: a signed APK attached to the same GitHub release as the
   # DMGs, so releases/latest/download/OpenDisplay-Android.apk (the website's
-  # download link) always resolves. Gradle builds it unsigned; apksigner signs
-  # it here, so the keystore never touches the Gradle config or the repo.
+  # download link) always resolves. Gradle builds it unsigned. apksigner then
+  # uses the ANDROID_KEYSTORE_* secrets when they are set, and otherwise the
+  # keystore committed in Android/release-keystore.
   build-android:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
-    # Same rule as build-mac: `secrets` can't appear in a step `if:`, so map
-    # the keystore to a job env var and guard on that. Until the maintainer
-    # adds the ANDROID_* secrets, this job builds but uploads nothing.
     env:
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
     defaults:
@@ -317,43 +315,25 @@ jobs:
       # minSdk 21 needs the v1 (JAR) signature for Android 5 and 6; apksigner
       # adds it on its own because it reads minSdk from the APK.
       - name: Sign APK
-        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
-          echo "Using $BUILD_TOOLS"
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
           mkdir -p dist
-          "$BUILD_TOOLS/zipalign" -p -f 4 \
+          bash release-keystore/sign-release-apk.sh \
             app/build/outputs/apk/release/app-release-unsigned.apk \
-            "$RUNNER_TEMP/aligned.apk"
-          "$BUILD_TOOLS/apksigner" sign \
-            --ks "$RUNNER_TEMP/release.jks" \
-            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
-            --ks-key-alias "$ANDROID_KEY_ALIAS" \
-            --key-pass env:ANDROID_KEY_PASSWORD \
-            --out dist/OpenDisplay-Android.apk \
-            "$RUNNER_TEMP/aligned.apk"
-          rm -f "$RUNNER_TEMP/release.jks"
-          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs dist/OpenDisplay-Android.apk
+            dist/OpenDisplay-Android.apk
           (cd dist && sha256sum OpenDisplay-Android.apk > OpenDisplay-Android.apk.sha256)
 
       - name: Upload APK to release
-        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "${{ needs.release-please.outputs.tag_name }}" \
             dist/OpenDisplay-Android.apk \
             dist/OpenDisplay-Android.apk.sha256
-
-      - name: Report skipped upload
-        if: ${{ env.ANDROID_KEYSTORE_BASE64 == '' }}
-        run: echo "::warning::ANDROID_KEYSTORE_BASE64 is not set, so no APK was attached to this release."
 
   # Google Play: the same release as an Android App Bundle on a testing track,
   # like build-ios does for TestFlight. Production stays a manual promotion in
