@@ -8,6 +8,9 @@ configure=(
     -S "${SRCROOT}/Pairing" -B "$build_dir"
     -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_SYSROOT=$(xcrun --sdk "$PLATFORM_NAME" --show-sdk-path)"
     "-DCMAKE_OSX_ARCHITECTURES=${ARCHS// /;}"
+    # Set before project() so the iOS platform file does not turn bssl into
+    # a bundle. See Pairing/CMakeLists.txt.
+    -DCMAKE_MACOSX_BUNDLE=OFF
 )
 if [[ "$PLATFORM_NAME" == iphone* ]]; then
     configure+=(-DCMAKE_SYSTEM_NAME=iOS "-DCMAKE_OSX_DEPLOYMENT_TARGET=$IPHONEOS_DEPLOYMENT_TARGET")

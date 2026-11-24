@@ -6,8 +6,11 @@
 # headless Mutter renders through Mesa's surfaceless platform.
 set -euo pipefail
 
+# cmake is not in base-devel. od-sender's opendisplay-lan build.rs runs it
+# to compile the LAN pairing library; without the package the build dies
+# with "No such file or directory".
 pacman -Syu --noconfirm --needed \
-  base-devel git rust clang pkgconf nasm ffmpeg libpipewire \
+  base-devel git rust clang cmake pkgconf nasm ffmpeg libpipewire \
   mutter pipewire wireplumber dbus libcap strace
 # Like sway and kwin_wayland (#298), a binary with file capabilities cannot be
 # executed in Docker's default capability set; a plain copy carries none.

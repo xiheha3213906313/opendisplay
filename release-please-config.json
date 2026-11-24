@@ -4,6 +4,7 @@
   "packages": {
     ".": {
       "release-type": "simple",
+      "bootstrap-sha": "90f7446e01a5ce051fc6f8c2eca16dc1cea3557b",
       "extra-files": [
         {
           "type": "toml",

@@ -11,6 +11,11 @@ on:
       tag:
         description: Existing release tag to build, e.g. v1.26.0
         required: true
+      publish_stores:
+        description: Also upload to TestFlight and Google Play. Leave false for a GitHub-only release.
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -41,21 +46,32 @@ jobs:
       # after the large #298 merge). Retry twice; a release that was created
       # before a failure is picked up as already tagged, so its builds would
       # be skipped: rebuild it with the workflow_dispatch entry below.
+      # skip-github-pull-request: Actions on this fork cannot open pull
+      # requests (run 45418376350). With no GitHub Release, that attempt
+      # rewrote history as 1.12.0. Creating the release from a merged
+      # release PR still runs. bootstrap-sha pins the previous release at
+      # v1.30.3 so the next version is computed from that commit.
       - uses: googleapis/release-please-action@v5
         if: github.event_name == 'push'
         id: rp
         continue-on-error: true
+        with:
+          skip-github-pull-request: true
       - if: github.event_name == 'push' && steps.rp.outcome == 'failure'
         run: sleep 30
       - uses: googleapis/release-please-action@v5
         if: github.event_name == 'push' && steps.rp.outcome == 'failure'
         id: rp2
         continue-on-error: true
+        with:
+          skip-github-pull-request: true
       - if: github.event_name == 'push' && steps.rp2.outcome == 'failure'
         run: sleep 60
       - uses: googleapis/release-please-action@v5
         if: github.event_name == 'push' && steps.rp2.outcome == 'failure'
         id: rp3
+        with:
+          skip-github-pull-request: true
       - name: Check the release to rebuild exists
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -65,9 +81,11 @@ jobs:
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a vX.Y.Z tag: $TAG"; exit 1; }
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
 
+  # GitHub-only unless a workflow_dispatch run sets publish_stores. A push
+  # to main must not upload to TestFlight.
   build-ios:
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: needs.release-please.outputs.release_created == 'true' && github.event_name == 'workflow_dispatch' && inputs.publish_stores == true
     # The iOS SDK decides how the app lays out on iPhone Duo: built with the
     # iOS 26 SDK it runs letterboxed in a phone-sized window, only the 27.1
     # SDK lets it use the full inner and outer displays (issues #446, #448).
@@ -362,9 +380,10 @@ jobs:
   # (upload.jks), not the app signing key: Play checks the upload signature
   # and re-signs with its own key. Inactive until the PLAY_* and
   # ANDROID_UPLOAD_* secrets exist; see RELEASING.md.
+  # Same gate as build-ios: a GitHub release does not upload to Play.
   upload-play:
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: needs.release-please.outputs.release_created == 'true' && github.event_name == 'workflow_dispatch' && inputs.publish_stores == true
     runs-on: ubuntu-latest
     env:
       PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}

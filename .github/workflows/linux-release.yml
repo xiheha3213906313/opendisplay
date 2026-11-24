@@ -89,7 +89,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libclang-dev nasm libpipewire-0.3-dev
+            cmake pkg-config libclang-dev nasm libpipewire-0.3-dev
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -214,6 +214,14 @@ jobs:
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
       options: --privileged
+      # The image ships the GNOME SDK in its system installation, and
+      # flatpak-builder updates it in place when Flathub has a newer commit.
+      # That rename fails inside the image's overlay layers with
+      # "Invalid cross-device link", and xvfb-run then exits 139. An anonymous
+      # volume, which Docker fills from the image, keeps the installation on
+      # the runner's own filesystem so the update can complete.
+      volumes:
+        - /var/lib/flatpak
     steps:
       # Pinned by SHA: its bundles are release attachments.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
