@@ -16,6 +16,16 @@ on:
         type: boolean
         required: false
         default: false
+      update_main:
+        description: Commit the Arch PKGBUILDs and Sparkle appcasts to main. Leave false to leave main unchanged.
+        type: boolean
+        required: false
+        default: false
+      rebuild_linux:
+        description: Rebuild and re-upload the Linux release assets. Leave false to keep assets already on the release.
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -134,9 +144,11 @@ jobs:
   # Linux sender tarballs and receiver Flatpak bundles, attached to the same
   # GitHub release; the job also appends the Linux install notes to it. One
   # version for every platform: the tag above is the Linux version too.
+  # A manual rebuild leaves the published Linux assets in place unless
+  # rebuild_linux is set. Push releases still attach them.
   build-linux:
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: needs.release-please.outputs.release_created == 'true' && (github.event_name != 'workflow_dispatch' || inputs.rebuild_linux == true)
     # The called workflow's upload job needs to write the release.
     permissions:
       contents: write
@@ -145,9 +157,10 @@ jobs:
       tag: ${{ needs.release-please.outputs.tag_name }}
 
   # Points the Arch PKGBUILDs on main at the new tag; see arch-bump.yml.
+  # A manual run does not commit to main unless update_main is set.
   bump-arch:
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: needs.release-please.outputs.release_created == 'true' && (github.event_name != 'workflow_dispatch' || inputs.update_main == true)
     permissions:
       contents: write
     uses: ./.github/workflows/arch-bump.yml
@@ -225,8 +238,10 @@ jobs:
       # No-ops gracefully until the maintainer adds the SPARKLE_PRIVATE_KEY
       # secret (the EdDSA private key from Sparkle's `generate_keys`), so this
       # never hard-fails a release before auto-update is switched on.
+      # Commits appcasts to main. A manual run skips that unless update_main
+      # is set; the DMGs are still uploaded above.
       - name: Publish Sparkle appcast to GitHub Pages
-        if: ${{ env.SPARKLE_PRIVATE_KEY != '' }}
+        if: ${{ env.SPARKLE_PRIVATE_KEY != '' && (github.event_name != 'workflow_dispatch' || inputs.update_main == true) }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
