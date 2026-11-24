@@ -78,6 +78,18 @@ final class VirtualAudioOutputs {
         let expires: DispatchTime
     }
 
+    private struct USBReturn {
+        var session: UUID
+        let preference: USBOutputReturn
+        let previousRequest: UUID?
+        var returned = false
+    }
+
+    private struct RemovedUSBOutput {
+        let preference: USBOutputReturn
+        let removedAt: ContinuousClock.Instant
+    }
+
     private let queue = DispatchQueue(label: "sender.audio-outputs")
     private let system = AudioObjectID(kAudioObjectSystemObject)
     private let registryToken = UUID().uuidString as CFString
@@ -88,6 +100,9 @@ final class VirtualAudioOutputs {
     private var objectIDs: [String: AudioObjectID] = [:]
     private var routing = AudioOutputRouting()
     private var pendingDefault: PendingDefault?
+    private var outputSelection = AudioOutputSelection()
+    private var usbReturns: [UUID: USBReturn] = [:]
+    private var removedUSBOutputs: [UUID: RemovedUSBOutput] = [:]
     private var nextVolumePoll = DispatchTime.now()
 
     private init() {
@@ -142,6 +157,7 @@ final class VirtualAudioOutputs {
                   sendVolume: @escaping (AndroidVolumeCommand) -> Void = { _ in },
                   onFailure: @escaping (String) -> Void, onRegistered: @escaping () -> Void) {
         queue.async {
+            self.removedUSBOutputs[session] = nil
             guard let plugin = self.checkedDriver() else {
                 onFailure(self.driverProblem() ?? "The OpenDisplay audio driver is unavailable.")
                 return
@@ -199,22 +215,75 @@ final class VirtualAudioOutputs {
         }
     }
 
-    func unregister(session: UUID, ended: Bool = false) {
+    func beginUSBReturn(_ window: AccessoryDetachWindow, session: UUID) {
+        queue.async {
+            let current = self.observeDefault()
+            let live = self.routes.first(where: { $0.session == session })
+            let liveUID = live?.uid
+            let recent = self.removedUSBOutputs.removeValue(forKey: session)
+            let preference: USBOutputReturn
+            // The USB pipe can report the loss just before the IOKit event.
+            if liveUID == nil, let recent, recent.removedAt >= window.start - AccessoryDetachWindow.displayDelay {
+                preference = recent.preference
+            } else {
+                preference = USBOutputReturn(selectedUID: liveUID == current ? liveUID : nil,
+                                             selectionRevision: self.outputSelection.revision)
+            }
+            self.usbReturns[window.id] = USBReturn(session: session, preference: preference,
+                                                    previousRequest: live?.request)
+        }
+    }
+
+    func resumeUSBReturn(_ token: UUID, session: UUID) {
+        queue.async {
+            guard self.usbReturns[token] != nil else { return }
+            self.usbReturns[token]?.session = session
+            self.usbReturns[token]?.returned = true
+            self.reconcileDefault()
+        }
+    }
+
+    func cancelUSBReturn(_ token: UUID) {
+        queue.async {
+            self.usbReturns[token] = nil
+            self.resetRoutingIfIdle()
+        }
+    }
+
+    func cancelUSBReturn(session: UUID) {
+        queue.async {
+            self.usbReturns = self.usbReturns.filter { $0.value.session != session || !$0.value.returned }
+            self.resetRoutingIfIdle()
+        }
+    }
+
+    func unregister(session: UUID, ended: Bool = false, rememberUSBOutput: Bool = false) {
         queue.async {
             let removed = self.routes.filter { $0.session == session }
             if !removed.isEmpty {
-                self.observeDefault()
+                let current = self.observeDefault()
+                if rememberUSBOutput {
+                    let preference = USBOutputReturn(selectedUID: removed.first(where: { $0.uid == current })?.uid,
+                                                     selectionRevision: self.outputSelection.revision)
+                    self.removedUSBOutputs[session] = RemovedUSBOutput(preference: preference, removedAt: .now)
+                }
                 self.routes.removeAll { $0.session == session }
                 self.reconcileDefault(removing: removed.map(\.uid))
                 if let plugin = self.checkedDriver() { _ = self.writeRegistry(self.routes, on: plugin) }
                 self.refreshDevices()
             }
-            if ended { self.audioParticipants.remove(session) }
-            if self.audioParticipants.isEmpty && self.routes.isEmpty {
-                self.routing = AudioOutputRouting()
-                self.pendingDefault = nil
+            if ended {
+                self.audioParticipants.remove(session)
+                self.removedUSBOutputs[session] = nil
             }
+            self.resetRoutingIfIdle()
         }
+    }
+
+    private func resetRoutingIfIdle() {
+        guard audioParticipants.isEmpty, routes.isEmpty, usbReturns.isEmpty else { return }
+        routing = AudioOutputRouting()
+        pendingDefault = nil
     }
 
     /// Called before AppKit exits so the old default is restored before the
@@ -300,7 +369,9 @@ final class VirtualAudioOutputs {
         if let pendingDefault, !removing.contains(pendingDefault.destination) { return }
         pendingDefault = nil
         let isAndroid = current.map(isVirtual) ?? false
-        let ready = routes.map(\.uid).filter { objectIDs[$0] != nil }
+        if removing.isEmpty, finishUSBReturn(current: current, isAndroid: isAndroid) { return }
+        let waiting = Set(usbReturns.values.map(\.session))
+        let ready = routes.filter { !waiting.contains($0.session) }.map(\.uid).filter { objectIDs[$0] != nil }
         let candidate = routing.nextOutput(current: current, ready: ready, isAndroid: isAndroid)
         if let candidate, let device = findOutput(candidate) {
             select(device, uid: candidate, origin: current)
@@ -308,6 +379,22 @@ final class VirtualAudioOutputs {
                   let (uid, device) = fallbackLocalOutput() {
             select(device, uid: uid, origin: current)
         }
+    }
+
+    private func finishUSBReturn(current: String?, isAndroid: Bool) -> Bool {
+        for (id, request) in usbReturns where request.returned {
+            guard let route = routes.first(where: { $0.session == request.session }),
+                  route.request != request.previousRequest,
+                  let device = objectIDs[route.uid] else { continue }
+            usbReturns[id] = nil
+            if request.preference.mayRestore(route.uid, currentRevision: outputSelection.revision) {
+                if current != route.uid { select(device, uid: route.uid, origin: current) }
+            } else if let current, !isAndroid {
+                routing.preserveLocalOutput(current)
+            }
+            return true
+        }
+        return false
     }
 
     @discardableResult
@@ -318,10 +405,15 @@ final class VirtualAudioOutputs {
             if uid == pending.destination {
                 routing.didSwitch(to: pending.destination, isAndroid: isVirtual(pending.destination))
                 pendingDefault = nil
+                outputSelection.observe(uid, automatic: true)
                 return uid
             }
             if uid == pending.origin, DispatchTime.now() < pending.expires { return uid }
             pendingDefault = nil
+        }
+        if uid != outputSelection.uid {
+            let previousDisappeared = outputSelection.uid.map { findOutput($0) == nil } ?? false
+            outputSelection.observe(uid, automatic: previousDisappeared)
         }
         routing.observe(uid, isAndroid: uid.map(isVirtual) ?? false)
         return uid

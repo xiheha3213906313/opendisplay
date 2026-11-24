@@ -28,10 +28,35 @@ struct AudioOutputRouting {
         lastOutput = uid
     }
 
+    mutating func preserveLocalOutput(_ uid: String) {
+        didSwitch(to: uid, isAndroid: false)
+        userSelectedLocal = true
+    }
+
     func nextOutput(current uid: String?, ready: [String], isAndroid: Bool) -> String? {
         if isAndroid {
             return ready.contains(where: { $0 == uid }) ? nil : ready.first ?? localOutput
         }
         return userSelectedLocal ? nil : ready.first
+    }
+}
+
+struct AudioOutputSelection {
+    private(set) var uid: String?
+    private(set) var revision: UInt64 = 0
+
+    mutating func observe(_ newUID: String?, automatic: Bool) {
+        guard let newUID else { return }
+        if let uid, uid != newUID, !automatic { revision &+= 1 }
+        uid = newUID
+    }
+}
+
+struct USBOutputReturn {
+    let selectedUID: String?
+    let selectionRevision: UInt64
+
+    func mayRestore(_ uid: String, currentRevision: UInt64) -> Bool {
+        selectedUID == uid && selectionRevision == currentRevision
     }
 }

@@ -2,6 +2,15 @@ import CoreGraphics
 import XCTest
 
 final class OriginRestoreTests: XCTestCase {
+    func testMainHandoffAdoptsTheNewArrangementWithoutReapplyingTheOldOrigin() {
+        let extensionOrigin = CGPoint(x: 1_334, y: 66)
+        var restore = OriginRestore(target: extensionOrigin)
+        XCTAssertEqual(restore.tick(origin: .zero), .apply(extensionOrigin))
+        restore.adoptCurrentOrigin(.zero)
+        XCTAssertEqual(restore.tick(origin: .zero), .none)
+        XCTAssertEqual(restore.tick(origin: extensionOrigin), .report(extensionOrigin))
+    }
+
     private let saved = CGPoint(x: -424, y: -1_152)
     private let macDefault = CGPoint(x: 1_512, y: 0)
     private let t0 = Date(timeIntervalSinceReferenceDate: 0)

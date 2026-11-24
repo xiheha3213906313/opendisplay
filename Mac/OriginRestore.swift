@@ -41,6 +41,12 @@ struct OriginRestore {
         lastObserved = origin
     }
 
+    mutating func adoptCurrentOrigin(_ origin: CGPoint) {
+        target = nil
+        deadline = nil
+        lastObserved = origin
+    }
+
     mutating func tick(origin: CGPoint, now: Date = Date()) -> Action {
         if let target {
             let deadline = self.deadline ?? now.addingTimeInterval(Self.window)

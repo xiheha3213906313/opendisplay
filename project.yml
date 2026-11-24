@@ -190,6 +190,7 @@ targets:
       - Mac/RemoteAudioVolume.swift
       - Mac/USBAccessory.swift
       - Mac/AccessoryRecords.swift
+      - Mac/AccessoryDisplayHandoff.swift
       - Mac/Log.swift
       - Mac/LogPolicies.swift
       - Shared/Protocol.swift

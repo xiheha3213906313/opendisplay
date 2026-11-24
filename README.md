@@ -80,6 +80,10 @@ You can plug in multiple devices using USB data cables. Each eligible device
 connects independently. Android may ask for its system USB accessory permission.
 If the phone exposes charging only, select File transfer so the Mac can identify
 it. After unplugging, choose the receiver manually to switch to Wi-Fi.
+If an Android USB receiver was the Mac's main display, macOS can choose a new
+main display after two seconds away. Replug within ten seconds to restore the
+previous main display and, if selected before unplugging, its sound output.
+Manual display and sound selections made while the receiver is away take priority.
 
 ## Comparison
 

@@ -19,21 +19,25 @@
 //
 // Dialing resets the device and walks it into accessory mode, and closing a
 // session resets it back, so a phone in use drops off the bus and returns
-// within a few seconds. A detach is therefore only reported once the device
-// has stayed away for `detachGrace`: a dial's own re-enumeration must not
-// look like an unplug (WiFi failover, a new auto-connect).
+// within a few seconds. Keep it in the device list for the whole grace
+// period while notifying the controller separately about the display handoff.
 
 import Foundation
 import IOKit
 
 @MainActor
 final class AccessoryDeviceWatcher {
-    private static let detachGrace: Duration = .seconds(6)
+    enum Presence {
+        case lost(AccessoryDetachWindow)
+        case displayDeadline(AccessoryDetachWindow)
+        case returned(AccessoryDetachWindow)
+    }
+
     private static let busyRetryInterval: Duration = .seconds(3)
 
     private var devices: [String: UsbmuxDevice] = [:]          // by serial
     private var serialByEntry: [UInt64: String] = [:]          // device registry entry id
-    private var pendingDetach: [String: Task<Void, Never>] = [:]
+    private var pendingDetach: [String: (window: AccessoryDetachWindow, task: Task<Void, Never>)] = [:]
     // Serials that answered GET_PROTOCOL this run. Every dial and session
     // end re-enumerates the device: a known device is not asked again.
     private var capable: Set<String> = []
@@ -45,13 +49,16 @@ final class AccessoryDeviceWatcher {
     // keeps asking a busy device until it answers or is unplugged.
     private var probes: [UInt64: Task<Void, Never>] = [:]
     private let onChange: ([UsbmuxDevice]) -> Void
+    private let onPresence: (String, Presence) -> Void
     private let port: IONotificationPortRef
     private var deviceAddedIterator: io_iterator_t = 0
     private var deviceRemovedIterator: io_iterator_t = 0
     private var interfaceIterators: [io_iterator_t] = []
 
-    init(onChange: @escaping ([UsbmuxDevice]) -> Void) {
+    init(onPresence: @escaping (String, Presence) -> Void,
+         onChange: @escaping ([UsbmuxDevice]) -> Void) {
         self.onChange = onChange
+        self.onPresence = onPresence
         port = IONotificationPortCreate(kIOMainPortDefault)
         IONotificationPortSetDispatchQueue(port, .main)
         let refcon = Unmanaged.passUnretained(self).toOpaque()
@@ -195,9 +202,16 @@ final class AccessoryDeviceWatcher {
     }
 
     private func attach(serial: String, name: String?, entry: UInt64) {
+        if let pending = pendingDetach.removeValue(forKey: serial) {
+            pending.task.cancel()
+            if pending.window.acceptsReturn(at: .now) {
+                onPresence(AOA.udid(serial: serial), .returned(pending.window))
+            } else {
+                removeDevice(serial: serial)
+            }
+        }
         serialByEntry[entry] = serial
         capable.insert(serial)
-        pendingDetach.removeValue(forKey: serial)?.cancel()
         guard devices[serial] == nil else { return }
         Log.info("Android device attached (accessory capable): \(name ?? serial)")
         devices[serial] = UsbmuxDevice(deviceID: -1, udid: AOA.udid(serial: serial), name: name)
@@ -213,16 +227,32 @@ final class AccessoryDeviceWatcher {
             guard let serial = serialByEntry.removeValue(forKey: entry),
                   devices[serial] != nil,
                   !serialByEntry.values.contains(serial) else { continue }
-            pendingDetach[serial]?.cancel()
-            pendingDetach[serial] = Task {
-                try? await Task.sleep(for: Self.detachGrace)
-                guard !Task.isCancelled else { return }
+            pendingDetach[serial]?.task.cancel()
+            let window = AccessoryDetachWindow(start: .now,
+                                               expectedReenumeration: AOA.consumeExpectedDeparture(entry))
+            let udid = AOA.udid(serial: serial)
+            let task = Task { [weak self] in
+                do {
+                    try await Task.sleep(until: window.displayDeadline, clock: .continuous)
+                    if window.shouldWithdrawDisplay(at: .now) {
+                        self?.onPresence(udid, .displayDeadline(window))
+                    }
+                    try await Task.sleep(until: window.deviceDeadline, clock: .continuous)
+                } catch { return }
+                guard let self, pendingDetach[serial]?.window.id == window.id else { return }
                 pendingDetach[serial] = nil
-                Log.info("Android device detached: \(serial)")
-                devices[serial] = nil
-                publish()
+                removeDevice(serial: serial)
             }
+            pendingDetach[serial] = (window, task)
+            Log.info("AOA: USB device left the bus")
+            onPresence(udid, .lost(window))
         }
+    }
+
+    private func removeDevice(serial: String) {
+        Log.info("Android device detached: \(serial)")
+        devices[serial] = nil
+        publish()
     }
 
     private static func entryID(_ service: io_service_t) -> UInt64 {

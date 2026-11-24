@@ -1,6 +1,7 @@
 import SwiftUI
 import Network
 import Combine
+import CoreGraphics
 import Sparkle
 
 /// How the app presents itself. One bundle, switched at runtime via the
@@ -127,6 +128,7 @@ final class DeviceSession: ObservableObject, Identifiable {
     let target: ConnectionTarget
     let name: String
     let sender: MacSender
+    let displayIdentityKey: String
 
     @Published var status = "Starting…"
     @Published var audioStatus: String?
@@ -151,6 +153,8 @@ final class DeviceSession: ObservableObject, Identifiable {
     // The udid the session is (or was last) cabled through, so a usbmuxd
     // detach can be matched back to this session for failover.
     var usbUDID: String?
+    var usbHandoffToken: UUID?
+    var waitingForUSBCable = false
     // The Bonjour service name this session was started from or failed over
     // to. Kept because browse results routinely arrive without their TXT
     // record (no install id to match on) and the USB device is detached
@@ -191,11 +195,12 @@ final class DeviceSession: ObservableObject, Identifiable {
         if outcomes != displaySizeOutcomes { displaySizeOutcomes = outcomes }
     }
 
-    init(id: String, target: ConnectionTarget, name: String, sender: MacSender) {
+    init(id: String, target: ConnectionTarget, name: String, sender: MacSender, displayIdentityKey: String) {
         self.id = id
         self.target = target
         self.name = name
         self.sender = sender
+        self.displayIdentityKey = displayIdentityKey
         if case .usb(let udid) = target {
             onUSB = true
             usbUDID = udid
@@ -260,6 +265,33 @@ final class SenderController: ObservableObject {
     private var lastLoggedReceivers: [String]?
     private var usbWatcher: UsbmuxDeviceWatcher?
     private var accessoryWatcher: AccessoryDeviceWatcher?
+    private var screenChanges: AnyCancellable?
+    private var mainDisplaySelection = MainDisplaySelection()
+    private var expectedMainDisplay: (window: UUID, display: CGDirectDisplayID, deadline: ContinuousClock.Instant)?
+
+    private struct DisplayReference {
+        let id: CGDirectDisplayID
+        let session: DeviceSession?
+
+        @MainActor var activeID: CGDirectDisplayID {
+            if let session { return session.sender.virtualDisplayID ?? 0 }
+            return id
+        }
+    }
+
+    private struct USBHandoff {
+        let window: AccessoryDetachWindow
+        var session: DeviceSession
+        let expectedReceiver: String?
+        let wasMain: Bool
+        let selectionRevision: UInt64
+        var returnedAt: ContinuousClock.Instant?
+        var mainBeforeRecreation: DisplayReference?
+        var returningDisplay: CGDirectDisplayID?
+        var restoreTask: Task<Void, Never>?
+    }
+
+    private var usbHandoffs: [String: USBHandoff] = [:]
 
     // Connection policy — one session per physical device, and the cable
     // wins whenever it's available (lower, steadier latency than WiFi):
@@ -307,10 +339,16 @@ final class SenderController: ObservableObject {
             self?.usbmuxDevices = devices
             self?.wiredDevicesChanged()
         }
-        accessoryWatcher = AccessoryDeviceWatcher { [weak self] devices in
+        accessoryWatcher = AccessoryDeviceWatcher(onPresence: { [weak self] udid, event in
+            self?.accessoryPresenceChanged(udid, event: event)
+        }) { [weak self] devices in
             self?.accessoryDevices = devices
             self?.wiredDevicesChanged()
         }
+        screenChanges = NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .sink { [weak self] _ in
+                self?.screenConfigurationChanged()
+            }
         lanSubscription = lan.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         lan.allow = { [weak self] id, request in
             guard let self else { return false }
@@ -463,7 +501,8 @@ final class SenderController: ObservableObject {
         }
         for device in usbDevices {
             guard !receiverClosedOnCable.contains(device.udid),
-                  !usbDisabled.contains("usb:\(device.udid)") else { continue }
+                  !usbDisabled.contains("usb:\(device.udid)"),
+                  !waitingForUSB(device.udid) else { continue }
             if let covering = activeSession(coveringUSB: device) {
                 upgradeToUSB(covering, device: device)
             } else if attemptedUSB.insert(device.udid).inserted {
@@ -538,6 +577,221 @@ final class SenderController: ObservableObject {
             end(session)
         }
         autoConnect()
+    }
+
+    private func waitingForUSB(_ udid: String) -> Bool {
+        guard let handoff = usbHandoffs[udid] else { return false }
+        return handoff.returnedAt == nil
+    }
+
+    private func updateMainDisplaySelection() {
+        let main = CGMainDisplayID()
+        let expected = expectedMainDisplay
+        mainDisplaySelection.observe(main: main, active: MainDisplaySelection.activeDisplays(),
+                                     requestedMain: expected?.display)
+        if let expected, main == expected.display || ContinuousClock.now >= expected.deadline {
+            expectedMainDisplay = nil
+        }
+    }
+
+    private func screenConfigurationChanged() {
+        let previouslyActive = mainDisplaySelection.active
+        let revision = mainDisplaySelection.selectionRevision
+        updateMainDisplaySelection()
+        if !usbHandoffs.isEmpty, mainDisplaySelection.selectionRevision != revision {
+            let choice = currentMainDisplayReference()
+            for udid in Array(usbHandoffs.keys) { usbHandoffs[udid]?.mainBeforeRecreation = choice }
+            sessions.forEach { $0.sender.adoptCurrentDisplayOrigin() }
+        }
+        if let handoff = usbHandoffs.values.first(where: { $0.returningDisplay == mainDisplaySelection.main }),
+           !previouslyActive.contains(mainDisplaySelection.main) {
+            holdMainDisplayForUSBReturn(handoff)
+        }
+        withdrawMissingPrimaryDisplays()
+    }
+
+    private func accessoryPresenceChanged(_ udid: String, event: AccessoryDeviceWatcher.Presence) {
+        switch event {
+        case .lost(let window):
+            guard !window.expectedReenumeration,
+                  let session = sessions.first(where: { $0.onUSB && $0.usbUDID == udid && !$0.failed }) else { return }
+            cancelUSBHandoff(for: session, reason: "USB cable removed again")
+            updateMainDisplaySelection()
+            let wasMain = session.sender.virtualDisplayID == mainDisplaySelection.main
+            usbHandoffs[udid] = USBHandoff(window: window, session: session,
+                                            expectedReceiver: session.deviceID, wasMain: wasMain,
+                                            selectionRevision: mainDisplaySelection.selectionRevision)
+            session.usbHandoffToken = window.id
+            if wasMain {
+                session.sender.deferDisplayArrangementForUSB(true)
+                VirtualAudioOutputs.shared.beginUSBReturn(window, session: session.sender.audioSession)
+            }
+        case .displayDeadline(let window):
+            guard usbHandoffs[udid]?.window.id == window.id else { return }
+            withdrawMissingPrimaryDisplays()
+        case .returned(let window):
+            guard var handoff = usbHandoffs[udid], handoff.window.id == window.id else { return }
+            handoff.returnedAt = .now
+            usbHandoffs[udid] = handoff
+            let session = handoff.session
+            if session.waitingForUSBCable {
+                end(session, preservingUSBHandoff: true)
+                connect(to: .usb(udid: udid), restoringUSB: window.id)
+                if usbHandoffs[udid]?.session === session { cancelUSBHandoff(for: session) }
+            } else if handoff.wasMain {
+                VirtualAudioOutputs.shared.resumeUSBReturn(window.id, session: session.sender.audioSession)
+            }
+        }
+    }
+
+    private func withdrawMissingPrimaryDisplays() {
+        let now = ContinuousClock.now
+        let main = CGMainDisplayID()
+        for handoff in usbHandoffs.values {
+            let session = handoff.session
+            guard handoff.returnedAt == nil, handoff.window.shouldWithdrawDisplay(at: now),
+                  !session.waitingForUSBCable, let display = session.sender.virtualDisplayID,
+                  handoff.wasMain || display == main else { continue }
+            session.waitingForUSBCable = true
+            session.sender.stop()
+            session.status = "Waiting for the Android USB cable…"
+            session.audioStatus = nil
+            Log.info("AOA: withdrew offline virtual display \(display) after USB disconnect")
+        }
+    }
+
+    private func prepareReturningUSBDisplay(for session: DeviceSession) {
+        guard let udid = session.usbUDID, let handoff = usbHandoffs[udid],
+              handoff.session === session, handoff.returnedAt != nil,
+              handoff.mainBeforeRecreation == nil else { return }
+        updateMainDisplaySelection()
+        usbHandoffs[udid]?.mainBeforeRecreation = currentMainDisplayReference()
+    }
+
+    private func currentMainDisplayReference() -> DisplayReference {
+        let main = mainDisplaySelection.main
+        return DisplayReference(id: main, session: sessions.first(where: { $0.sender.virtualDisplayID == main }))
+    }
+
+    private func returningUSBDisplayCreated(for session: DeviceSession, display: CGDirectDisplayID) {
+        guard let udid = session.usbUDID, var handoff = usbHandoffs[udid],
+              handoff.session === session, handoff.returnedAt != nil else { return }
+        handoff.returningDisplay = display
+        usbHandoffs[udid] = handoff
+        updateMainDisplaySelection()
+        holdMainDisplayForUSBReturn(handoff)
+    }
+
+    private func holdMainDisplayForUSBReturn(_ handoff: USBHandoff) {
+        guard handoff.restoreTask == nil, handoff.returningDisplay == mainDisplaySelection.main,
+              let previous = handoff.mainBeforeRecreation?.activeID, previous != mainDisplaySelection.main,
+              mainDisplaySelection.active.contains(previous) else { return }
+        let result = submitMainDisplay(previous, window: handoff.window.id)
+        Log.info("AOA: held main display \(previous) pending USB video: \(result)")
+    }
+
+    private func finishUSBDisplayReturn(for session: DeviceSession, display: CGDirectDisplayID,
+                                        receiver: String?, at instant: ContinuousClock.Instant) {
+        guard let udid = session.usbUDID, let handoff = usbHandoffs[udid],
+              handoff.session === session, let returnedAt = handoff.returnedAt,
+              instant >= returnedAt, handoff.restoreTask == nil else { return }
+        if let expected = handoff.expectedReceiver, expected != receiver?.lowercased() {
+            cancelUSBHandoff(for: session, reason: "receiver installation changed")
+            return
+        }
+        updateMainDisplaySelection()
+        let manuallyChanged = mainDisplaySelection.selectionRevision != handoff.selectionRevision
+        let target: CGDirectDisplayID
+        if handoff.wasMain, !manuallyChanged {
+            target = display
+        } else if mainDisplaySelection.main == display,
+                  let previous = handoff.mainBeforeRecreation?.activeID, previous != display,
+                  mainDisplaySelection.active.contains(previous) {
+            // WindowServer can restore the old main during display creation.
+            target = previous
+        } else {
+            let reason = manuallyChanged ? "main display changed manually" : "receiver was not the main display"
+            completeUSBDisplayReturn(udid, window: handoff.window.id, result: reason)
+            return
+        }
+        let window = handoff.window.id
+        let revision = mainDisplaySelection.selectionRevision
+        usbHandoffs[udid]?.restoreTask = Task { [weak self] in
+            await self?.restoreUSBMainDisplay(target, returningDisplay: display, udid: udid,
+                                              window: window, revision: revision)
+        }
+    }
+
+    private func submitMainDisplay(_ display: CGDirectDisplayID, window: UUID) -> MainDisplaySelection.Submission {
+        expectedMainDisplay = (window, display, .now + .seconds(1))
+        sessions.forEach { $0.sender.adoptCurrentDisplayOrigin() }
+        let result = MainDisplaySelection.submit(display)
+        if case .submitted = result, expectedMainDisplay?.window == window {
+            expectedMainDisplay?.deadline = .now + .seconds(1)
+        }
+        updateMainDisplaySelection()
+        if case .failed = result, expectedMainDisplay?.window == window { expectedMainDisplay = nil }
+        if case .layoutUnavailable = result, expectedMainDisplay?.window == window { expectedMainDisplay = nil }
+        return result
+    }
+
+    private func restoreUSBMainDisplay(_ display: CGDirectDisplayID, returningDisplay: CGDirectDisplayID,
+                                       udid: String, window: UUID, revision: UInt64) async {
+        for attempt in 1...2 {
+            guard mayRestoreUSBMainDisplay(udid, window: window, display: returningDisplay, revision: revision) else {
+                return
+            }
+            let result = submitMainDisplay(display, window: window)
+            Log.info("AOA: USB main display \(display) attempt \(attempt): \(result); current \(mainDisplaySelection.main)")
+            let deadline = ContinuousClock.now + .seconds(1)
+            repeat {
+                guard mayRestoreUSBMainDisplay(udid, window: window, display: returningDisplay, revision: revision) else {
+                    return
+                }
+                if mainDisplaySelection.main == display {
+                    sessions.forEach { $0.sender.adoptCurrentDisplayOrigin() }
+                    completeUSBDisplayReturn(udid, window: window, result: "confirmed main display \(display)")
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(50)) }
+                catch { return }
+            } while ContinuousClock.now < deadline
+        }
+        completeUSBDisplayReturn(udid, window: window,
+                                 result: "Quartz did not apply main display \(display); current \(CGMainDisplayID())")
+    }
+
+    private func mayRestoreUSBMainDisplay(_ udid: String, window: UUID, display: CGDirectDisplayID,
+                                          revision: UInt64) -> Bool {
+        guard !Task.isCancelled, let handoff = usbHandoffs[udid], handoff.window.id == window else { return false }
+        guard handoff.session.onUSB, handoff.session.sender.virtualDisplayID == display else {
+            completeUSBDisplayReturn(udid, window: window, result: "session or display no longer active")
+            return false
+        }
+        updateMainDisplaySelection()
+        guard mainDisplaySelection.selectionRevision == revision else {
+            completeUSBDisplayReturn(udid, window: window, result: "main display changed manually")
+            return false
+        }
+        return true
+    }
+
+    private func completeUSBDisplayReturn(_ udid: String, window: UUID, result: String) {
+        guard let handoff = usbHandoffs[udid], handoff.window.id == window else { return }
+        usbHandoffs[udid] = nil
+        if expectedMainDisplay?.window == window { expectedMainDisplay = nil }
+        handoff.session.sender.deferDisplayArrangementForUSB(false)
+        Log.info("AOA: USB display return for \(handoff.session.name): \(result)")
+    }
+
+    private func cancelUSBHandoff(for session: DeviceSession, reason: String = "session ended") {
+        if let udid = session.usbUDID, let handoff = usbHandoffs[udid], handoff.session === session {
+            handoff.restoreTask?.cancel()
+            completeUSBDisplayReturn(udid, window: handoff.window.id, result: reason)
+        }
+        guard let token = session.usbHandoffToken else { return }
+        session.usbHandoffToken = nil
+        VirtualAudioOutputs.shared.cancelUSBReturn(token)
     }
 
     /// How to dial a cabled device: usbmuxd, or accessory mode for Android.
@@ -652,7 +906,8 @@ final class SenderController: ObservableObject {
     }
 
     func connect(to target: ConnectionTarget, userInitiated: Bool = false,
-                 awaitingWake: Bool = false, authenticated: LANService.Authenticated? = nil) {
+                 awaitingWake: Bool = false, authenticated: LANService.Authenticated? = nil,
+                 restoringUSB: UUID? = nil) {
         if case .lan(let id, _) = target, authenticated == nil {
             guard userInitiated, let peer = lan.peers.first(where: { $0.id == id }) else { return }
             lan.connect(to: peer, request: .manual)
@@ -716,13 +971,28 @@ final class SenderController: ObservableObject {
             transport = .secure(authenticated.connection, receiverID: authenticated.id)
         }
 
+        let handoff: USBHandoff?
+        if case .usb(let udid?) = target, let pending = usbHandoffs[udid],
+           pending.window.id == restoringUSB {
+            handoff = pending
+        } else {
+            handoff = nil
+        }
+        let identityKey = handoff?.session.displayIdentityKey ?? id
         let name = label(for: target)
         let sender = MacSender(transport: transport, name: name, mode: mode,
-                               quality: quality, displaySerial: Self.displaySerial(for: id),
-                               identityOffset: identityOffset(for: id),
+                               quality: quality, displaySerial: Self.displaySerial(for: identityKey),
+                               identityOffset: identityOffset(for: identityKey),
                                awaitingWake: awaitingWake,
                                queue: authenticated?.queue ?? DispatchQueue(label: "sender.video"))
-        let session = DeviceSession(id: id, target: target, name: name, sender: sender)
+        let session = DeviceSession(id: id, target: target, name: name, sender: sender,
+                                    displayIdentityKey: identityKey)
+        if let handoff, let udid = session.usbUDID {
+            usbHandoffs[udid]?.session = session
+            session.usbHandoffToken = handoff.window.id
+            sender.deferDisplayArrangementForUSB(true)
+            VirtualAudioOutputs.shared.resumeUSBReturn(handoff.window.id, session: sender.audioSession)
+        }
         session.deviceID = authenticated?.id
         if case .wifi(let result) = target {
             session.wifiServiceName = serviceName(of: result)
@@ -731,13 +1001,24 @@ final class SenderController: ObservableObject {
         sender.onStatus = { [weak session] text in
             // Retry loops re-announce the same status every second (e.g. the
             // asleep wait) — only a change is worth the UI churn and the log line.
-            guard let session, session.status != text else { return }
+            guard let session, !session.waitingForUSBCable, session.status != text else { return }
             session.status = text
             Log.info("status[\(id)]: \(text)")
         }
         sender.onAudioState = { [weak session] status in
+            guard session?.waitingForUSBCable == false else { return }
             session?.audioStatus = status
         }
+        sender.onPreparingUSBDisplay = { [weak self, weak session] in
+            if let session { self?.prepareReturningUSBDisplay(for: session) }
+        }
+        sender.onCreatedUSBDisplay = { [weak self, weak session] display in
+            if let session { self?.returningUSBDisplayCreated(for: session, display: display) }
+        }
+        sender.onUSBVideoReady = { [weak self, weak session] display, receiver, instant in
+            if let session { self?.finishUSBDisplayReturn(for: session, display: display, receiver: receiver, at: instant) }
+        }
+        sender.maySaveDisplayArrangement = { [weak self] in self?.usbHandoffs.isEmpty ?? false }
         sender.onHello = { [weak self, weak session] info in
             guard let self, let session else { return }
             guard self.sessions.contains(where: { $0 === session }) else { return }
@@ -771,7 +1052,7 @@ final class SenderController: ObservableObject {
             // Device unplugged / left the network and stayed gone: end this
             // session fully (virtual display + capture + indicator). No
             // transport fallback — reconnecting is the user's call.
-            guard let self, let session else { return }
+            guard let self, let session, !session.waitingForUSBCable else { return }
             Log.info("device disconnected — session \(session.id) stopped")
             let target = self.wiredTarget(for: session)
             self.end(session)
@@ -787,7 +1068,7 @@ final class SenderController: ObservableObject {
             // the session (which frees the cursor from the now-invisible
             // display) is paired with a replacement session that dials
             // patiently until the device wakes and accepts again.
-            guard let self, let session else { return }
+            guard let self, let session, !session.waitingForUSBCable else { return }
             let target = self.wiredTarget(for: session)
             self.end(session)
             if let target { self.connect(to: target, awaitingWake: true) }
@@ -796,7 +1077,7 @@ final class SenderController: ObservableObject {
             // The user stopped the capture in the system UI — same intent as
             // the in-app Disconnect, so it also opts the device out of
             // auto-connect (or the next browse event would resurrect it).
-            guard let self, let session else { return }
+            guard let self, let session, !session.waitingForUSBCable else { return }
             Log.info("session \(session.id) capture stopped via the system UI — honoring as disconnect")
             self.disconnect(session)
         }
@@ -805,7 +1086,7 @@ final class SenderController: ObservableObject {
             // as-is. Adding would double-count when a rotation rebuild
             // re-discovers the same poisoned identity within one session.
             guard let session else { return }
-            UserDefaults.standard.set(Int(totalOffset), forKey: Self.identityOffsetKey(for: session.id))
+            UserDefaults.standard.set(Int(totalOffset), forKey: Self.identityOffsetKey(for: identityKey))
             Log.info("display identity for \(session.id) moved to offset \(totalOffset) — "
                 + "macOS saved hostile state for the old one")
         }
@@ -816,7 +1097,7 @@ final class SenderController: ObservableObject {
             // The receiver app quit — a deliberate goodbye, so no reconnect
             // waits around. Reopening the app is a fresh start handled by
             // the normal discovery/auto-connect paths.
-            guard let self, let session else { return }
+            guard let self, let session, !session.waitingForUSBCable else { return }
             Log.info("session \(session.id) closed by the receiver — ending")
             let retry = self.wiredTarget(for: session)
             var legacyAccessory = false
@@ -848,6 +1129,7 @@ final class SenderController: ObservableObject {
                 // would keep holding this device's serial, and a parked
                 // live-looking session would swallow every future connect.
                 session.failed = true
+                self.cancelUSBHandoff(for: session)
                 sender.stop()
             }
         }
@@ -855,7 +1137,7 @@ final class SenderController: ObservableObject {
 
     private func wiredTarget(for session: DeviceSession) -> ConnectionTarget? {
         if let udid = session.usbUDID, session.onUSB,
-           usbDevices.contains(where: { $0.udid == udid }) { return .usb(udid: udid) }
+           !waitingForUSB(udid), usbDevices.contains(where: { $0.udid == udid }) { return .usb(udid: udid) }
         if let target = session.directTarget, session.wired {
             if let result = wifiService(for: session) { return .wifi(result) }
             return target
@@ -865,6 +1147,7 @@ final class SenderController: ObservableObject {
 
     /// User-initiated disconnect: also opt the device out of auto-connect.
     func disconnect(_ session: DeviceSession, notify: Bool = true) {
+        cancelUSBHandoff(for: session, reason: "user disconnected")
         switch session.target {
         case .usb: usbDisabled.insert(session.id)
         case .lan: break
@@ -909,7 +1192,8 @@ final class SenderController: ObservableObject {
         connect(to: target, userInitiated: true)
     }
 
-    private func end(_ session: DeviceSession) {
+    private func end(_ session: DeviceSession, preservingUSBHandoff: Bool = false) {
+        if !preservingUSBHandoff { cancelUSBHandoff(for: session) }
         session.sender.stop()
         sessions.removeAll { $0 === session }
     }
@@ -922,7 +1206,7 @@ final class SenderController: ObservableObject {
             if case .lan = session.target { return nil }
             return session.target
         }
-        sessions.forEach { $0.sender.stop() }
+        sessions.forEach { end($0) }
         sessions.removeAll()
         targets.forEach { connect(to: $0) }
         autoConnect()   // a rebuilt WiFi session may deserve its cable back

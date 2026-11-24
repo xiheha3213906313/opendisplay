@@ -32,4 +32,30 @@ final class AudioOutputRoutingTests: XCTestCase {
         routing.observe("speakers", isAndroid: false)
         XCTAssertEqual(routing.nextOutput(current: "speakers", ready: ["a"], isAndroid: false), "a")
     }
+
+    func testUSBReturningOutputCanReclaimAnAutomaticFallback() {
+        var selection = AudioOutputSelection()
+        selection.observe("tablet", automatic: false)
+        let saved = USBOutputReturn(selectedUID: "tablet", selectionRevision: selection.revision)
+        selection.observe("speakers", automatic: true)
+        XCTAssertTrue(saved.mayRestore("tablet", currentRevision: selection.revision))
+        XCTAssertFalse(saved.mayRestore("different-install", currentRevision: selection.revision))
+    }
+
+    func testUSBReturningOutputPreservesAManualChoice() {
+        var selection = AudioOutputSelection()
+        selection.observe("tablet", automatic: false)
+        let saved = USBOutputReturn(selectedUID: "tablet", selectionRevision: selection.revision)
+        selection.observe("other-android", automatic: true)
+        selection.observe("headphones", automatic: false)
+        XCTAssertFalse(saved.mayRestore("tablet", currentRevision: selection.revision))
+    }
+
+    func testMainDisplayReturnDoesNotAutomaticallySelectItsUnselectedAudioRoute() {
+        var routing = AudioOutputRouting()
+        let saved = USBOutputReturn(selectedUID: nil, selectionRevision: 0)
+        XCTAssertFalse(saved.mayRestore("tablet", currentRevision: 0))
+        routing.preserveLocalOutput("speakers")
+        XCTAssertNil(routing.nextOutput(current: "speakers", ready: ["tablet"], isAndroid: false))
+    }
 }

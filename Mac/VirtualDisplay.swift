@@ -313,6 +313,11 @@ final class VirtualDisplay {
         }
     }
 
+    @MainActor
+    func adoptCurrentOrigin() {
+        originRestore.adoptCurrentOrigin(CGDisplayBounds(displayID).origin)
+    }
+
     /// An extend-mode virtual display must never sit in a system mirror set.
     /// macOS can drop it there on its own — e.g. when it misclassifies the
     /// display as a TV, whose arrangement default is "Mirror Entire Screen"

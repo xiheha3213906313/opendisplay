@@ -83,6 +83,24 @@ enum AOA {
     /// Dials are serialized per device: each one resets and re-handshakes
     /// it, and a superseded dial must not reset a newer session's device.
     private static let dialLock = SerialLock()
+    private static let expectedDepartures = OSAllocatedUnfairLock(initialState: [UInt64: ContinuousClock.Instant]())
+
+    private static func expectDeparture(_ service: io_service_t) {
+        var entry: UInt64 = 0
+        guard IORegistryEntryGetRegistryEntryID(service, &entry) == KERN_SUCCESS else { return }
+        let now = ContinuousClock.now
+        expectedDepartures.withLock { entries in
+            entries = entries.filter { $0.value > now }
+            entries[entry] = now + .seconds(2)
+        }
+    }
+
+    static func consumeExpectedDeparture(_ entry: UInt64) -> Bool {
+        expectedDepartures.withLock { entries in
+            guard let deadline = entries.removeValue(forKey: entry) else { return false }
+            return ContinuousClock.now < deadline
+        }
+    }
 
     /// Walk the device into accessory mode and connect to its receiver
     /// through a loopback relay. Returns the receiver's first message
@@ -106,7 +124,7 @@ enum AOA {
         // phone). Its stream state is stale and the receiver only starts
         // clean on a fresh attach, so reset it back to normal mode first.
         if device.isAccessory {
-            reset(device.service)
+            reset(device.service, reenumerating: true)
             device.release()
             guard let normal = try await waitForDevice(serial: serial, accessory: false,
                                                        timeout: reenumerationTimeout) else {
@@ -296,6 +314,7 @@ enum AOA {
         }
         // The device leaves the bus on this one, sometimes before the status
         // stage completes: the caller's wait for the accessory is the verdict.
+        expectDeparture(service)
         try? device.__send(request(0x40, start), data: nil as NSMutableData?,
                            bytesTransferred: nil as UnsafeMutablePointer<Int>?, completionTimeout: 1)
         Log.info("AOA: accessory mode requested")
@@ -304,9 +323,10 @@ enum AOA {
     /// Reset the device: an accessory drops back to its normal USB mode.
     /// IOUSBHost reports an error even when it worked (the device is gone
     /// before the reply), so the result is not checked.
-    static func reset(_ service: io_service_t) {
+    static func reset(_ service: io_service_t, reenumerating: Bool = false) {
         guard let device = try? IOUSBHostDevice(__ioService: service, options: [],
                                                 queue: nil, interestHandler: nil) else { return }
+        if reenumerating { expectDeparture(service) }
         try? device.reset()
         device.destroy()
     }

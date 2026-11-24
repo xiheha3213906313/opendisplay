@@ -60,6 +60,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     // controller can deduplicate USB/WiFi sessions to the same device.
     @MainActor var onHello: ((PhoneInfo) -> Void)?
     @MainActor var onAudioState: ((String?) -> Void)?
+    @MainActor var onPreparingUSBDisplay: (() -> Void)?
+    @MainActor var onCreatedUSBDisplay: ((CGDirectDisplayID) -> Void)?
+    @MainActor var onUSBVideoReady: ((CGDirectDisplayID, String?, ContinuousClock.Instant) -> Void)?
+    @MainActor var maySaveDisplayArrangement: (() -> Bool)?
+    @MainActor var virtualDisplayID: CGDirectDisplayID? { virtualDisplay?.displayID }
     // Fired when the user stopped the capture from the system UI (menu-bar
     // recording indicator / "Stop Extending"). The controller disconnects
     // the session — teardown plus auto-connect opt-out — so the app honors
@@ -81,7 +86,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private let startCode: [UInt8] = [0, 0, 0, 1]
 
     // Audio negotiation, capture and sends are ordered on the connection queue.
-    private let audioSession = UUID()
+    let audioSession = UUID()
     private var audioReceiver: UUID?
     private var audioVolumeOffered = false
     private var audioDriverCheck: UUID?
@@ -93,6 +98,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private var pendingAudioSends = 0
     private var audioSent = 0
     private var audioDropped = 0
+    private var usbVideoReadyGeneration: UInt64?
+    private var usbSentCapture: (connection: UInt64, capture: UInt64)?
+    @MainActor private var deferDisplayArrangement = false
 
     // The dial target. Written on `queue` only (after init): the controller
     // can migrate a live session between transports via switchTransport.
@@ -758,12 +766,14 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 if stopped { return }
                 let make: @MainActor () -> VirtualDisplay? = {
                     guard !self.stopped else { return nil }
-                    let restoreOrigin = DisplayArrangement.origin(for: sizeInPoints, device: arrangementKey)
+                    self.onPreparingUSBDisplay?()
+                    let restoreOrigin = self.deferDisplayArrangement ? nil :
+                        DisplayArrangement.origin(for: sizeInPoints, device: arrangementKey)
                     // The productID moves with the serial: field data in #206
                     // suggests some macOS versions key the hostile state on
                     // the product, not the serial — bumping both escapes
                     // either keying.
-                    return VirtualDisplay(name: displayName,
+                    let display = VirtualDisplay(name: displayName,
                                           pointsWide: pointsWide, pointsHigh: pointsHigh,
                                           scale: bootstrapCanvas.scale,
                                           descriptorMaxPixelsPerAxis: canvasPlan.descriptorMaxPixelsPerAxis,
@@ -771,10 +781,13 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                                           serialNum: serial &+ totalOffset,
                                           productID: 0x4F53 &+ totalOffset,
                                           restoreOrigin: restoreOrigin,
-                                          onOriginChange: { origin, currentSize in
+                                          onOriginChange: { [weak self] origin, currentSize in
+                                              guard let self, self.maySaveDisplayArrangement?() != false else { return }
                                               DisplayArrangement.save(origin: origin, size: currentSize,
                                                                       device: arrangementKey)
                                           })
+                    if let display { self.onCreatedUSBDisplay?(display.displayID) }
+                    return display
                 }
                 created = await makeAvoidingUnitClash(make)
                 if stopped { throw CancellationError() }
@@ -1145,8 +1158,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private func resizeInPlace(_ vd: VirtualDisplay, pointsWide: Int, pointsHigh: Int,
                                scale: Int? = nil, arrangementKey: String) async -> Bool {
         guard !stopped, virtualDisplay === vd else { return false }
-        let origin = DisplayArrangement.origin(for: CGSize(width: pointsWide, height: pointsHigh),
-                                               device: arrangementKey, resizing: vd.displayID)
+        let origin = deferDisplayArrangement ? nil : DisplayArrangement.origin(
+            for: CGSize(width: pointsWide, height: pointsHigh), device: arrangementKey, resizing: vd.displayID)
         return await vd.resize(pointsWide: pointsWide, pointsHigh: pointsHigh, scale: scale,
                                movingTo: origin,
                                stillCurrent: { !self.stopped && self.virtualDisplay === vd })
@@ -1408,13 +1421,26 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         queue.async {
             self.captureRecoveryFailures = 0
             self.waitingForConsole = false
+            self.reportUSBVideoReady()
         }
         Log.info("capture started: \(pixelsWide)x\(pixelsHigh) display \(display.displayID) generation \(generation) mode \(mode.rawValue) localCursor=\(localCursor)")
         let kind = lastHello?.kind ?? "device"
         await status("\(mode == .extend ? "Extending to" : "Mirroring to") \(kind) (\(pixelsWide)×\(pixelsHigh))")
     }
 
+    @MainActor
+    func deferDisplayArrangementForUSB(_ deferArrangement: Bool) {
+        deferDisplayArrangement = deferArrangement
+        adoptCurrentDisplayOrigin()
+    }
+
+    @MainActor
+    func adoptCurrentDisplayOrigin() {
+        virtualDisplay?.adoptCurrentOrigin()
+    }
+
     func stop() {
+        guard !stopped else { return }
         stopped = true
         queue.async {
             self.resetAudioLink()
@@ -2199,7 +2225,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private func scheduleReconnect() {
         guard !stopped else { return }
-        resetAudioLink()
+        resetAudioLink(transportLost: true)
         if everConnected {
             if let since = disconnectedSince {
                 if Date().timeIntervalSince(since) > disconnectGraceSeconds {
@@ -2566,10 +2592,12 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         conn.receive(minimumIncompleteLength: 4, maximumLength: 4) { [weak self] data, _, _, error in
             guard let self, error == nil, let data, data.count == 4 else {
                 if let self, self.connection === conn {
-                    self.resetAudioLink()
-                    if case .secure = self.transport {
-                        self.linkDied("secure socket closed")
+                    self.resetAudioLink(transportLost: true)
+                    switch self.transport {
+                    case .secure, .accessory:
+                        self.linkDied("receiver socket closed")
                         return
+                    default: break
                     }
                 }
                 if let error {
@@ -2592,7 +2620,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             conn.receive(minimumIncompleteLength: len, maximumLength: len) { [weak self] payload, _, _, error in
                 guard let self, self.connection === conn else { return }
                 guard error == nil, let payload, payload.count == len else {
-                    self.resetAudioLink()
+                    self.resetAudioLink(transportLost: true)
                     return
                 }
                 self.handleControl(payload)
@@ -2690,8 +2718,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 if receiver != nil {
                     beginAudioIfReady()
                 } else if offered {
+                    VirtualAudioOutputs.shared.cancelUSBReturn(session: audioSession)
                     publishAudioState("This receiver did not provide a valid audio device identity.")
                 } else {
+                    VirtualAudioOutputs.shared.cancelUSBReturn(session: audioSession)
                     publishAudioState(nil)
                 }
                 if let selected = activeStreamConfigurationSnapshot, peerAcceptsActiveCodec {
@@ -3423,6 +3453,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 guard !self.stopped, self.connectionReady, self.audioDriverCheck == id else { return }
                 self.audioDriverCheck = nil
                 if let problem {
+                    VirtualAudioOutputs.shared.cancelUSBReturn(session: self.audioSession)
                     self.publishAudioState(problem)
                     return
                 }
@@ -3498,23 +3529,29 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             if error == nil {
                 self.audioSent += 1
             } else {
-                self.failAudio("The connection could not send system audio.")
+                self.failAudio("The connection could not send system audio.", transportLost: true)
             }
         })
     }
 
-    private func failAudio(_ status: String) {
+    private func failAudio(_ status: String, transportLost: Bool = false) {
         Log.info("audio: \(status)")
         audioFailed = true
-        stopAudio(notifyPeer: true)
+        stopAudio(notifyPeer: true, transportLost: transportLost)
+        if !transportLost { VirtualAudioOutputs.shared.cancelUSBReturn(session: audioSession) }
         publishAudioState(status)
     }
 
-    private func stopAudio(notifyPeer: Bool) {
+    private func stopAudio(notifyPeer: Bool, transportLost: Bool = false) {
         audioDriverCheck = nil
         guard let id = audioRequest else { return }
         audioRequest = nil
-        if audioRegistered { VirtualAudioOutputs.shared.unregister(session: audioSession) }
+        if audioRegistered {
+            let rememberUSBOutput: Bool
+            if case .accessory = transport { rememberUSBOutput = transportLost }
+            else { rememberUSBOutput = false }
+            VirtualAudioOutputs.shared.unregister(session: audioSession, rememberUSBOutput: rememberUSBOutput)
+        }
         audioRegistered = false
         if notifyPeer {
             sendJSONFrame("{\"type\":\"audioStop\",\"id\":\"\(id.uuidString)\"}")
@@ -3525,8 +3562,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         audioDropped = 0
     }
 
-    private func resetAudioLink() {
-        stopAudio(notifyPeer: false)
+    private func resetAudioLink(transportLost: Bool = false) {
+        stopAudio(notifyPeer: false, transportLost: transportLost)
         audioReceiver = nil
         audioVolumeOffered = false
         audioFailed = false
@@ -3555,9 +3592,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             return
         }
         let frame = framed(payload)
+        let generation = connectionGeneration
+        let capture = captureGenerationNow
         pendingSends += 1
         connection.send(content: frame, completion: .contentProcessed { [weak self] error in
-            guard let self else { return }
+            guard let self, self.connection === connection, self.connectionGeneration == generation else { return }
             self.pendingSends -= 1
             if let error {
                 Log.info("send error: \(error)")
@@ -3565,6 +3604,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             self.framesSent += 1
             self.bytesSent += frame.count
+            if case .accessory = self.transport,
+               self.usbVideoReadyGeneration != generation, self.helloSeenOnConnection {
+                self.usbSentCapture = (generation, capture)
+                self.reportUSBVideoReady()
+            }
             // Report stats roughly once a second.
             let elapsed = Date().timeIntervalSince(self.statsWindowStart)
             if elapsed >= 1.0 {
@@ -3575,6 +3619,20 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 Task { @MainActor in self.onStats?(frames, mbps) }
             }
         })
+    }
+
+    private func reportUSBVideoReady() {
+        guard case .accessory = transport, connectionReady, captureDisplayID != 0,
+              usbVideoReadyGeneration != connectionGeneration, let sent = usbSentCapture,
+              sent.connection == connectionGeneration, sent.capture == captureGenerationNow else { return }
+        usbVideoReadyGeneration = connectionGeneration
+        let display = captureDisplayID
+        let receiver = lastHello?.id
+        let now = ContinuousClock.now
+        Task { @MainActor [weak self] in
+            guard let self, !self.stopped else { return }
+            self.onUSBVideoReady?(display, receiver, now)
+        }
     }
 
     // MARK: - Helpers
