@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.31.0](https://github.com/xiheha3213906313/opendisplay/compare/v1.30.3...v1.31.0) (2026-11-24)
+
+
+### Features
+
+* pair Wi-Fi peers and resume wired sessions ([a41eda3](https://github.com/xiheha3213906313/opendisplay/commit/a41eda335d45156316b82c382966c80985f50a09))
+* install audio driver and synchronize Android media volume ([cefad2c](https://github.com/xiheha3213906313/opendisplay/commit/cefad2cb72c47bcf716b4d9c1e50d17ccd83f849))
+* publish Android as a Mac sound output ([2934244](https://github.com/xiheha3213906313/opendisplay/commit/29342446008213a7491ab653f1a36e731442c7f8))
+* forward Mac system audio to Android ([079a61d](https://github.com/xiheha3213906313/opendisplay/commit/079a61d219443164c0c2a29bd572c6bd6b1b3ab7))
+
+
+### Bug Fixes
+
+* improve Wi-Fi pairing code entry ([cf9da5c](https://github.com/xiheha3213906313/opendisplay/commit/cf9da5c1c61a4505a1a4ebe36d13ad8fc76186d4))
+* **mac:** restore the primary display after Android USB reconnect ([0fd0d92](https://github.com/xiheha3213906313/opendisplay/commit/0fd0d921f2bad2ba2d9f1e2f79b68d38485a3c07))
+* authorize Android audio routes with a HAL lease token ([1af08f8](https://github.com/xiheha3213906313/opendisplay/commit/1af08f8c9ef69308ea972886d935b4b27cd1cf0a))
+
 ## [1.30.3](https://github.com/peetzweg/opendisplay/compare/v1.30.2...v1.30.3) (2026-11-14)
 
 
