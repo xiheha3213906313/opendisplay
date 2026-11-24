@@ -7,7 +7,7 @@ Tools for measuring sharpness, colour and frame rate end to end: from the sender
 - **A sender:** the Debug sender (`./run.sh`) streaming in Extend mode to exactly one receiver.
 - **A receiving Mac:** the Debug receiver (`OpenDisplay Receiver Dev.app`), reachable over ssh (default host `imac`; set `OD_RECEIVER_HOST`). For captures, start it with the frame probe on:
   ```sh
-  defaults write com.peetzweg.opensidecar.mac.receiver.debug dumpIdleFrames -bool YES
+  defaults write com.xiheha.opensidecar.mac.receiver.debug dumpIdleFrames -bool YES
   ```
   Turn the probe off for frame-rate runs, since it decodes every frame a second time.
 - Python 3 with `numpy` and `Pillow` on the sender.
@@ -32,7 +32,7 @@ Run `tools/quality/build.sh` once. It compiles the test page and the benchmark h
 ## Debug switches used with the suite
 
 These live in Debug builds only.
-- **Sender** (`com.peetzweg.opensidecar.mac.debug`):
+- **Sender** (`com.xiheha.opensidecar.mac.debug`):
   - `bitrate` (Mbps)
   - `maxPendingEncodes` (encodes in flight)
   - `quality` (`best`/`balanced`/`fast`)
@@ -46,7 +46,7 @@ These live in Debug builds only.
 tools/quality/build.sh
 tools/quality/capture.sh hevc-default && python3 tools/quality/score.py build/quality/cap/hevc-default --panel
 tools/quality/seq.sh hevc-change change 40 && python3 tools/quality/score_seq.py build/quality/cap/hevc-change
-ssh imac 'defaults write com.peetzweg.opensidecar.mac.receiver.debug dumpIdleFrames -bool NO'   # then restart it
+ssh imac 'defaults write com.xiheha.opensidecar.mac.receiver.debug dumpIdleFrames -bool NO'   # then restart it
 tools/quality/measure.sh hevc-default
 ```
 

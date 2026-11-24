@@ -11,16 +11,7 @@ alternative to Apple Sidecar, Duet Display, and Luna Display: true extended
 display (not just mirroring), Retina-sharp, over USB or WiFi, with touch and
 scroll input.
 
-[Website](https://peetzweg.github.io/opendisplay/) · [Quick start](#quick-start) · [How it works](#how-it-works) · [FAQ](#faq) · [Contributing](#contributing)
-
-<br />
-
-<a href="https://ko-fi.com/peetzweg">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/support_me_on_kofi_beige.png" />
-    <img src="assets/support_me_on_kofi_dark.png" width="256px" alt="Support me on Ko-fi" />
-  </picture>
-</a>
+[Quick start](#quick-start) · [How it works](#how-it-works) · [FAQ](#faq) · [Contributing](#contributing)
 
 </div>
 
@@ -116,7 +107,7 @@ use case, mostly a 5K iMac next to an Apple silicon laptop.
 | Native 5K on a 5K iMac | ✅ ~30 fps | ? | ✅ | ? | ✅ 48 fps (60 experimental) | Experimental (1440p default) | ✅ 60 fps |
 | Different Apple IDs, no account | ✅ | Same Apple ID for full quality | ✅ | ❌ (account) | ✅ | ✅ | ✅ |
 | Several receiving Macs | ✅ | ? | ? | ✅ | ✅ | ? | ? |
-| Keyboard and mouse at the receiving Mac | ❌ ([planned](https://github.com/peetzweg/opendisplay/issues/16)) | ❌ | ✅ | ✅ | ✅ | ? | ? |
+| Keyboard and mouse at the receiving Mac | ❌ (planned) | ❌ | ✅ | ✅ | ✅ | ? | ? |
 | Audio | ✅ Mac → Android | ✅ | ? | ? | ✅ | ✅ | ✅ |
 | Shut down the receiving Mac from the sender | ✅ over a cable | ? | ? | ? | ? | ? | ? |
 | iPhone and iPad as displays too | ✅ | ❌ | iPad only | ✅ | ❌ | ❌ | ❌ |
@@ -180,8 +171,7 @@ the session onto the cable automatically, even one plugged in mid-session, and
 the device row says *Cable*. Older Macs with a Mini DisplayPort-shaped
 Thunderbolt 1 or 2 port work with a Thunderbolt 3 to 2 adapter and a
 Thunderbolt 2 cable.
-Input from the receiving Mac's keyboard and mouse is a follow-up
-([#147](https://github.com/peetzweg/opendisplay/issues/147)).
+Input from the receiving Mac's keyboard and mouse is planned.
 
 **Which settings give the best picture?** Out of the box OpenDisplay already
 picks the sharpest setup it can, so you rarely need to change anything. The
@@ -277,14 +267,11 @@ send a 5K panel 1:1. So OpenDisplay uses HEVC whenever both Macs support it in
 hardware and falls back to H.264 everywhere else, with nothing to configure.
 iPhones and iPads with an A9 chip or later decode HEVC too. Colour detail is
 the same with both, because both send colour at a quarter of the resolution
-(4:2:0); fuller colour is tracked in
-[#322](https://github.com/peetzweg/opendisplay/issues/322).
+(4:2:0).
 
 **Is my screen content sent anywhere?** No. One direct TCP connection
 between your Mac and your device, over your cable or your LAN. No servers,
-no accounts, no analytics. Full details — including what the apps store
-locally and the current WiFi-encryption caveat — on the
-[privacy page](https://peetzweg.github.io/opendisplay/privacy.html).
+no accounts, no analytics. See [PROTOCOL.md](PROTOCOL.md) for connection details.
 
 **What's the license? Can I fork it or use it commercially?**
 [GPL-3.0](LICENSE). Use, study, and adapt it freely — commercially too. If
@@ -314,7 +301,7 @@ Plasma 6.8+ and GNOME 50+** are experimental. Video is CPU-encoded for now
 (VA-API planned), and the stream is not encrypted, so use a network you trust.
 
 Install it from the
-[latest release](https://github.com/peetzweg/opendisplay/releases/latest) (Linux ships in every OpenDisplay release, same version as the Mac and iOS apps):
+[latest release](https://github.com/xiheha3213906313/opendisplay/releases/latest) (when Linux artifacts are available):
 the x86_64/aarch64 tarball with its `install.sh` works on any distribution,
 and on Arch / Omarchy you can instead build the package from this repository
 with `makepkg -si`
@@ -337,7 +324,7 @@ at 24 ms end to end; other desktops are expected to work. Install it from
 the same release as a Flatpak bundle (any distribution) or, on Arch /
 Omarchy, build its package from this repository with `makepkg -si`; see
 [linux/README.md#linux-receiver-beta](linux/README.md#linux-receiver-beta).
-Reports go to [#284](https://github.com/peetzweg/opendisplay/issues/284).
+Report problems in this repository.
 
 ## Third-party projects
 
@@ -346,17 +333,17 @@ iPhone, iPad, Mac, Android and Linux. Fans have also built their own clients
 against the same protocol ([PROTOCOL.md](PROTOCOL.md)), for example for
 de-Googled Android phones, iPads too old for the official app, or Linux X11
 desktops. Requirements, install steps and comparisons are in the docs:
-[opendisplay.app/docs/third-party](https://opendisplay.app/docs/third-party/).
+[opendisplay.app/docs/third-party](content/docs/third-party/).
 
-**Older iOS receivers** ([docs](https://opendisplay.app/docs/third-party/older-ios/))
+**Older iOS receivers** ([docs](content/docs/third-party/older-ios/))
 * [Francesco149/opendisplay (iOSLegacy)](https://github.com/Francesco149/opendisplay/tree/ios12-legacy-receiver/iOSLegacy) - the official receiver's code in a UIKit shell for iOS 12.2+ (iPad Air, iPad mini 2/3, iPhone 5s/6), built and installed yourself
 * [cuongpham1/ipad-iphone-second-monitor-ios12-free](https://github.com/cuongpham1/ipad-iphone-second-monitor-ios12-free) - iOS 12 client for iPads and iPhones that cannot run the official app, prebuilt `.ipa`
 
-**Linux senders** ([docs](https://opendisplay.app/docs/third-party/linux/))
+**Linux senders** ([docs](content/docs/third-party/linux/))
 * [cray2015/opendisplay-x11](https://github.com/cray2015/opendisplay-x11) - extend an X11 desktop onto an iPad over a USB cable; needs a free HDMI or DP++ port
 * [tixwho/opendisplay-linux](https://github.com/tixwho/opendisplay-linux) - drive an iPhone or iPad from a Wayland desktop (KDE Plasma, Hyprland)
 
-**Android receivers** ([docs](https://opendisplay.app/docs/third-party/android/))
+**Android receivers** ([docs](content/docs/third-party/android/))
 * [gprot42/android-opendisplay](https://github.com/gprot42/android-opendisplay) - GrapheneOS receiver for de-Googled Pixel phones and tablets, Android 8.0+
 * [josepacelli/opendisplay-android](https://github.com/josepacelli/opendisplay-android) - Android receiver, Android 8.0+, works with an unmodified Mac app
 
@@ -393,8 +380,7 @@ protocol evolves across releases is covered in
 
 `CGVirtualDisplay` is a **private CoreGraphics API** (the same one used by
 BetterDisplay and DeskPad) — which is why the Mac sender ships as a direct
-download instead of through the Mac App Store. The iPhone/iPad and Android
-receivers are available in their respective app stores.
+download instead of through the Mac App Store. Build receiver apps from this repository or use artifacts published by this fork.
 
 ## Install
 
@@ -402,56 +388,11 @@ You need **two apps**: the Mac sender (captures and sends) and a receiver on
 your iPhone, iPad or Android device (receives and displays). To use a
 **second Mac** as the display, install `OpenDisplay Receiver` on it instead.
 
-### Homebrew (Mac)
+### Releases
 
-```sh
-brew install --cask opendisplay           # the sender
-brew install --cask opendisplay-receiver  # a Mac that should be the display
-```
+Download available builds from this fork's [GitHub releases](https://github.com/xiheha3213906313/opendisplay/releases/latest). The macOS sender requires macOS 14 or later; the macOS receiver requires macOS 12 or later. The iPhone and iPad receiver requires iOS or iPadOS 15 or later.
 
-Both apps keep updating themselves via Sparkle after a Homebrew install.
-
-### Prebuilt downloads (Mac)
-
-Grab `OpenDisplay.dmg` from the
-[latest release](https://github.com/peetzweg/opendisplay/releases/latest).
-The app is signed with a Developer ID certificate and notarized by Apple, so it
-opens with a plain double-click on macOS 14+ — no Gatekeeper warning. Open the
-`.dmg` and drag the app to Applications.
-
-For a Mac that should *be* the display, grab `OpenDisplayReceiver.dmg` from
-the same release instead. It runs on macOS 12+ and is signed and notarized
-the same way; both apps update themselves via Sparkle.
-
-### iPhone app
-
-Needs **iOS / iPadOS 15 or newer**. That reaches the 16.7.x line (iPad 5,
-iPad Pro 1st gen, iPhone 8, iPhone X) and the 15.8.x line, where Apple left
-the iPad Air 2, the iPad mini 4, the iPhone 6s, 7 and the first SE. If your
-iPad can't be updated past 15.8, it can still be a second display
-([#72](https://github.com/peetzweg/opendisplay/issues/72)). Apple Pencil
-hover needs iPadOS 16.4 and a hover-capable iPad and Pencil pairing (see
-[Apple's list](https://support.apple.com/guide/ipad/ipadc55b6c7a/ipados));
-everything else works the same on every supported version.
-
-- **App Store** (recommended): install the released app from the
-  [App Store](https://apps.apple.com/us/app/opendisplay/id6780264891).
-- **TestFlight** (early builds): join the public beta at
-  [testflight.apple.com/join/3NYaY11c](https://testflight.apple.com/join/3NYaY11c).
-- **Build from source**: open the project in Xcode, select your free Apple ID
-  under Signing, hit Run. Takes ~2 minutes.
-
-### Android app
-
-Install the released receiver from [Google Play](https://play.google.com/store/apps/details?id=com.peetzweg.opendisplay) on
-Android 7.0 or later. Beta enrollment is optional.
-
-Want early builds, like TestFlight on iOS? Join the
-[OpenDisplay Google Group](https://groups.google.com/g/opendisplay) with your Google Play account,
-then [join the Android beta](https://play.google.com/apps/testing/com.peetzweg.opendisplay)
-and install or update through Google Play.
-
-Install the Mac sender above as well, then open the Android receiver.
+Android builds can be installed from this fork's release artifacts when available. Because this fork uses a different application identifier, it installs separately from the upstream app.
 
 ## Quick start (from source)
 
@@ -470,7 +411,7 @@ app onto your device).
 ### Build
 
 ```sh
-git clone https://github.com/peetzweg/opendisplay.git
+git clone https://github.com/xiheha3213906313/opendisplay.git
 cd opendisplay
 echo "DEVELOPMENT_TEAM=YOURTEAMID" > .env   # your Apple team ID, for signing
 ./generate.sh                               # runs xcodegen with your .env
@@ -535,78 +476,13 @@ The phone log is the half usually missing from a WiFi report: whether the
 receiver ever announced itself, whether its listener restarted, whether the
 decoder was failing. Attach both if you can.
 
-## Roadmap
+## Updates and releases
 
-Tracked as [roadmap issues](https://github.com/peetzweg/opendisplay/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap) — pick one up if you'd like to contribute!
-
-**Connectivity & distribution**
-- [#16](https://github.com/peetzweg/opendisplay/issues/16) Encrypted WiFi transport with pairing code
-- [ ] App Store release of the iOS app + notarized Mac downloads
-
-**Input**
-- [#4](https://github.com/peetzweg/opendisplay/issues/4) Apple Pencil with pressure and tilt
-- [#5](https://github.com/peetzweg/opendisplay/issues/5) Right-click and multi-touch gestures
-- [#6](https://github.com/peetzweg/opendisplay/issues/6) Hardware keyboard passthrough
-- [#7](https://github.com/peetzweg/opendisplay/issues/7) On-screen modifier key sidebar
-
-**Display & media**
-- [#9](https://github.com/peetzweg/opendisplay/issues/9) Resolution & quality settings
-- [#10](https://github.com/peetzweg/opendisplay/issues/10) HEVC encoding
-- [#12](https://github.com/peetzweg/opendisplay/issues/12) Audio forwarding
-
-**Experience**
-- [#11](https://github.com/peetzweg/opendisplay/issues/11) Menu bar app mode with auto-connect
-- [#13](https://github.com/peetzweg/opendisplay/issues/13) Battery & lifecycle awareness
-
-**Exploratory**
-- [#14](https://github.com/peetzweg/opendisplay/issues/14) Remote access beyond the local network
-- [#15](https://github.com/peetzweg/opendisplay/issues/15) Additional client platforms
-
-Done: prebuilt releases, built-in USB connectivity (no helper tools), WiFi via Bonjour, portrait mode, touch + two-finger scroll, performance overlay, iPad support, multiple devices at once ([#8](https://github.com/peetzweg/opendisplay/issues/8) — every connected device becomes its own extended display), a Mac as the display ([#17](https://github.com/peetzweg/opendisplay/issues/17), WiFi or Thunderbolt/Ethernet cable).
-
-## Auto-update (macOS app)
-
-The macOS app updates itself with [Sparkle](https://sparkle-project.org) —
-an open-source framework, **not** a hosted service. Update checks hit only
-our own infrastructure:
-
-- The app reads an **appcast** feed hosted on the landing-page site:
-  `https://opendisplay.app/appcast.xml` (`SUFeedURL` in `project.yml`).
-- The release workflow (`.github/workflows/release.yml`, `build-mac` job)
-  runs Sparkle's `generate_appcast` against the notarized `OpenDisplay.dmg`,
-  signs it with the EdDSA key, commits the result to `public/appcast.xml`,
-  and dispatches the Pages deploy — so the published feed points download
-  links at the GitHub Release assets.
-- Sparkle verifies both the EdDSA signature and Apple's notarization before
-  installing. The app checks automatically in the background
-  (`SUEnableAutomaticChecks`) and offers a manual **"Check for Updates…"**
-  button next to **Quit** in the menu-bar window.
-
-### Maintainer prerequisites (before auto-update goes live)
-
-Auto-update is **scaffolded but inert** until the signing keys are in place.
-The private signing key is **never** committed — it lives only as a CI
-secret. To switch it on:
-
-1. **Generate the key pair.** Run Sparkle's `generate_keys` once (it ships
-   in the Sparkle SPM artifact bundle and in the release tarball at
-   `bin/generate_keys`). It prints a **public** key and stores the
-   **private** key in your login keychain.
-2. **Public key →** paste it into `SUPublicEDKey` in `project.yml` (replace
-   the `REPLACE_WITH_SUPUBLICEDKEY_FROM_generate_keys` placeholder), then
-   re-run `xcodegen generate` and commit.
-3. **Private key →** add it as the `SPARKLE_PRIVATE_KEY` GitHub Actions
-   secret (export it with `generate_keys -x private_key.pem` if needed). The
-   appcast step in `release.yml` no-ops gracefully while this secret is
-   absent, so releases keep working until you're ready.
-4. The **first appcast publishes on the next release** after both keys are
-   set. Confirm `https://opendisplay.app/appcast.xml` resolves, then **test
-   the full update flow on a real signed/notarized build** (check → download
-   → verify → relaunch) — this can't be validated in CI.
+See [RELEASING.md](RELEASING.md) for build and compatibility checks. This fork needs its own signing credentials and update feed before signed releases and automatic updates can be offered. The inherited Sparkle configuration points to the upstream project and must be replaced before publishing.
 
 ## Contributing
 
-Issues and PRs are very welcome — especially for the roadmap items above.
+Issues and pull requests are welcome in this repository.
 The codebase is intentionally small: ~4 Swift files per platform, with
 [Sparkle](https://sparkle-project.org) (SPM) as the macOS app's only
 runtime dependency, for auto-update. The [How it works](#how-it-works)

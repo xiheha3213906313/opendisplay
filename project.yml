@@ -89,7 +89,7 @@ targets:
       base:
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Pairing/include"
         OTHER_LDFLAGS: '$(inherited) "$(DERIVED_FILE_DIR)/lan-pairing/libodpair.a" "$(DERIVED_FILE_DIR)/lan-pairing/_deps/boringssl-build/libcrypto.a" -lc++'
-        PRODUCT_BUNDLE_IDENTIFIER: com.peetzweg.opensidecar.mac
+        PRODUCT_BUNDLE_IDENTIFIER: com.xiheha.opensidecar.mac
         PRODUCT_NAME: OpenDisplay
         BUNDLE_DISPLAY_NAME: OpenDisplay
         SWIFT_OBJC_BRIDGING_HEADER: Mac/OpenSidecarMac-Bridging-Header.h
@@ -105,7 +105,7 @@ targets:
         # lists show, so the Debug build must override it to appear as its
         # own row instead of a second, indistinguishable "OpenDisplay".
         Debug:
-          PRODUCT_BUNDLE_IDENTIFIER: com.peetzweg.opensidecar.mac.debug
+          PRODUCT_BUNDLE_IDENTIFIER: com.xiheha.opensidecar.mac.debug
           PRODUCT_NAME: OpenDisplay Dev
           BUNDLE_DISPLAY_NAME: OpenDisplay Dev
           # Colour-inverted icon so the dev build is obvious in the Dock,
@@ -157,7 +157,7 @@ targets:
       base:
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Pairing/include"
         OTHER_LDFLAGS: '$(inherited) "$(DERIVED_FILE_DIR)/lan-pairing/libodpair.a" "$(DERIVED_FILE_DIR)/lan-pairing/_deps/boringssl-build/libcrypto.a" -lc++'
-        PRODUCT_BUNDLE_IDENTIFIER: com.peetzweg.opensidecar.mac.receiver
+        PRODUCT_BUNDLE_IDENTIFIER: com.xiheha.opensidecar.mac.receiver
         PRODUCT_NAME: OpenDisplay Receiver
         BUNDLE_DISPLAY_NAME: OpenDisplay Receiver
         # Log.swift's file locking helpers live in the C bridging header.
@@ -167,7 +167,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       configs:
         Debug:
-          PRODUCT_BUNDLE_IDENTIFIER: com.peetzweg.opensidecar.mac.receiver.debug
+          PRODUCT_BUNDLE_IDENTIFIER: com.xiheha.opensidecar.mac.receiver.debug
           PRODUCT_NAME: OpenDisplay Receiver Dev
           BUNDLE_DISPLAY_NAME: OpenDisplay Receiver Dev
           ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon-Dev
@@ -251,6 +251,6 @@ targets:
       base:
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Pairing/include"
         OTHER_LDFLAGS: '$(inherited) "$(DERIVED_FILE_DIR)/lan-pairing/libodpair.a" "$(DERIVED_FILE_DIR)/lan-pairing/_deps/boringssl-build/libcrypto.a" -lc++'
-        PRODUCT_BUNDLE_IDENTIFIER: com.peetzweg.opensidecar.ios
+        PRODUCT_BUNDLE_IDENTIFIER: com.xiheha.opensidecar.ios
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

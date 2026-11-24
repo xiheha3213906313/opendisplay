@@ -541,13 +541,35 @@ struct LANCodeForm: View {
     @ObservedObject var lan: LANService
     var forget: (String) -> Void
     @State private var code = ""
+    @FocusState private var codeFocused: Bool
 
     var body: some View {
         if let prompt = lan.prompt, prompt.code == nil {
             Text("Enter the code shown on \(prompt.name)")
             HStack {
-                TextField("Six-digit code", text: $code)
+                TextField("Six-digit code", text: $code, prompt: Text("Six-digit code"))
+                    .labelsHidden()
+                    .textFieldStyle(.plain)
+                    .font(.title3.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.center)
+                    .focused($codeFocused)
+                    .padding(.horizontal, 10)
+                    .frame(minHeight: 32)
+                    .frame(width: 144)
+                    .background {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(.background)
+                            .onTapGesture { codeFocused = true }
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(codeFocused ? Color.accentColor : Color.secondary,
+                                          lineWidth: codeFocused ? 2 : 1)
+                            .allowsHitTesting(false)
+                    }
                     .onSubmit { submit(prompt.id) }
+                    .task(id: prompt.id) { codeFocused = true }
                 Button("Verify") { submit(prompt.id) }
                     .disabled(!valid)
                 Button("Cancel") {

@@ -15,7 +15,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.peetzweg.opendisplay"
+        applicationId = "com.xiheha.opendisplay"
         // Google Play rejects bundles below API 24 (its automatic protection
         // requires it), so Play builds pass -PappMinSdk=24. The GitHub APK
         // keeps 21 for Android 5 and 6 devices.

@@ -61,7 +61,7 @@ cd Android
 ./gradlew testDebugUnitTest lintDebug   # JVM tests + lint (catches API > minSdk)
 ```
 
-The debug build installs as `com.peetzweg.opendisplay.debug` ("OpenDisplay
+The debug build installs as `com.xiheha.opendisplay.debug` ("OpenDisplay
 Dev") next to a release build.
 
 ## Connecting

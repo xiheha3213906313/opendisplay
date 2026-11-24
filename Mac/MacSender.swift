@@ -239,7 +239,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     // capture→encode→stream→display latency (~30ms perceived). Instead we
     // hide it from capture and stream its position on the control channel —
     // the phone draws it locally on the ~2ms path the touches use.
-    // Escape hatch: `defaults write com.peetzweg.opensidecar.mac localCursor -bool false`.
+    // Escape hatch: `defaults write com.xiheha.opensidecar.mac localCursor -bool false`.
     private let localCursor = UserDefaults.standard.object(forKey: "localCursor") == nil
         || UserDefaults.standard.bool(forKey: "localCursor")
     // Cursor sampling must not share ScreenCaptureKit's serial callback queue:
@@ -885,7 +885,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                                receiver: info)
         try ensureActiveDisplay(vd)
 
-        // Debug aid (`defaults write com.peetzweg.opensidecar.mac testPattern -bool true`):
+        // Debug aid (`defaults write com.xiheha.opensidecar.mac testPattern -bool true`):
         // an animated window on the virtual display generates a constant frame
         // stream so steady-state latency can be measured without user activity.
         if UserDefaults.standard.bool(forKey: "testPattern") {

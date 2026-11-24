@@ -16,7 +16,7 @@ fi
 # makes macOS forget Screen Recording after every rebuild. Give the Debug app
 # one stable requirement based on its already-distinct bundle identifier.
 # A real development signature is left untouched.
-STABLE_REQUIREMENT='designated => identifier "com.peetzweg.opensidecar.mac.debug"'
+STABLE_REQUIREMENT='designated => identifier "com.xiheha.opensidecar.mac.debug"'
 if codesign -dv "$APP" 2>&1 | grep -q 'Signature=adhoc' \
     && ! codesign -d -r- "$APP" 2>&1 | grep -Fq "$STABLE_REQUIREMENT"; then
   codesign --force --sign - \
