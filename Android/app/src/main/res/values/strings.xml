@@ -50,4 +50,9 @@
     <string name="link_website">OpenDisplay.app</string>
     <string name="link_github">GitHub: peetzweg/opendisplay</string>
     <string name="link_kofi">Support OpenDisplay on Ko-fi</string>
+    <string name="enter_code_on">Enter this code on %1$s</string>
+    <string name="update_wifi_sender">Update OpenDisplay on the computer to connect over Wi-Fi.</string>
+    <string name="disconnect_display">Disconnect</string>
+    <string name="paired_computers">Paired computers</string>
+    <string name="forget_computer">Forget %1$s</string>
 </resources>

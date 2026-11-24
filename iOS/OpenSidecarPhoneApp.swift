@@ -203,6 +203,8 @@ struct IdleView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
+                LANReceiverControls(lan: receiver.lan, connected: receiver.connected,
+                                    disconnect: receiver.disconnectLAN)
             }
 
             VStack(alignment: .leading, spacing: 14) {
@@ -350,6 +352,11 @@ struct SettingsView: View {
     var body: some View {
         AdaptiveNavigation {
             Form {
+            Section("Connection") {
+                LANReceiverControls(lan: receiver.lan, connected: receiver.connected,
+                                    disconnect: receiver.disconnectLAN)
+            }
+
                 if !rateAppTapped {
                     Section {
                         Button {
@@ -642,6 +649,7 @@ final class ReceiverModel: ObservableObject {
     private var backgroundToken: UIBackgroundTaskIdentifier = .invalid
 
     func sceneDidBackground() {
+        receiver.setLANActive(false)
         // Known limitation: lock detection rides the protected-data signal,
         // which only fires when a passcode is set AND "Require Passcode" is
         // Immediately (the Face ID default). Other configurations make a

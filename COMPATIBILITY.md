@@ -17,6 +17,15 @@ This document is the companion policy for *evolving* it.
 
 ---
 
+## Paired LAN connections
+
+Wi-Fi and ordinary LAN now require both peers to support LAN authentication,
+including a receiver previously used over USB. The media `pv` handshake
+still negotiates existing capabilities after authentication. usbmuxd and
+direct Mac cables keep the wired handshake. An updated Mac detects a legacy
+Android AOA receiver's raw `hello`. Resuming over the same USB accessory
+attachment requires both updated applications.
+
 ## 1. The problem
 
 We cut Mac and iOS from one release tag, but distribution is not simultaneous:

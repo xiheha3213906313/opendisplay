@@ -25,6 +25,7 @@ import com.google.android.material.color.MaterialColors
 class IdleView(context: Context, kind: String, onSettings: () -> Unit) : ScrollView(context) {
     private val dot = View(context)
     private val status = TextView(context)
+    private val computers = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
 
     private fun color(attr: Int) = MaterialColors.getColor(this, attr)
 
@@ -60,6 +61,7 @@ class IdleView(context: Context, kind: String, onSettings: () -> Unit) : ScrollV
             bottomMargin = dp(24)
         })
 
+        column.addView(computers, LinearLayout.LayoutParams(WRAP, WRAP))
         val hints = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(20), dp(20), dp(6))
@@ -83,6 +85,16 @@ class IdleView(context: Context, kind: String, onSettings: () -> Unit) : ScrollV
             setTextColor(color(com.google.android.material.R.attr.colorOutline))
             gravity = Gravity.CENTER
         }, LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(8); bottomMargin = dp(8) })
+    }
+
+    fun showComputers(devices: List<Pair<String, () -> Unit>>) {
+        computers.removeAllViews()
+        devices.forEach { (name, connect) ->
+            computers.addView(MaterialButton(context).apply {
+                text = name
+                setOnClickListener { connect() }
+            }, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, WRAP))
+        }
     }
 
     fun setStatus(text: String, connected: Boolean) {

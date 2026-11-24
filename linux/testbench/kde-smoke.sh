@@ -117,7 +117,7 @@ outputs | grep -x "Virtual-od-smoke" >/dev/null && { echo "Virtual-od-smoke left
 
 if [ -n "${OD_RECEIVER:-}" ]; then
   port=$((20000 + RANDOM % 10000))
-  "$OD_RECEIVER" --listen "127.0.0.1:$port" --sink none --no-mdns \
+  "$OD_RECEIVER" --listen "127.0.0.1:$port" --sink none --no-mdns --dev-raw-loopback \
     --width 1024 --height 768 --scale 2 --refresh 60 --stats-every 1 \
     > "$logdir/receiver.log" 2>&1 &
   receiver_pid=$!
@@ -125,7 +125,7 @@ if [ -n "${OD_RECEIVER:-}" ]; then
   sleep 0.5
 
   echo "--- run --backend kde -> od-receiver --sink none"
-  "$sender" run --to "127.0.0.1:$port" --backend kde --duration 4 > "$logdir/run.log" 2>&1 ||
+  "$sender" run --dev-raw-loopback --to "127.0.0.1:$port" --backend kde --duration 4 > "$logdir/run.log" 2>&1 ||
     { cat "$logdir/run.log"; echo "od-sender run failed"; exit 1; }
   cat "$logdir/run.log"
   # kde_output_management_v2 sets the hello's scale (KWin alone picks one
@@ -136,7 +136,7 @@ if [ -n "${OD_RECEIVER:-}" ]; then
     { echo "receiver saw no 1024x768 streamConfig"; exit 1; }
 
   echo "--- crash (during an auto-left placement) and clean"
-  "$sender" run --to "127.0.0.1:$port" --backend kde --duration 30 --position auto-left \
+  "$sender" run --dev-raw-loopback --to "127.0.0.1:$port" --backend kde --duration 30 --position auto-left \
     > "$logdir/crash.log" 2>&1 &
   run_pid=$!
   # Kill only once the placement (and the shift of Virtual-0) is applied.
@@ -176,7 +176,7 @@ if [ -n "${OD_RECEIVER:-}" ]; then
   echo "--- run --position auto-left"
   # KWin refuses negative positions, so the existing output moves right;
   # after the sender exits it is back at 0,0.
-  "$sender" run --to "127.0.0.1:$port" --backend kde --duration 2 --position auto-left \
+  "$sender" run --dev-raw-loopback --to "127.0.0.1:$port" --backend kde --duration 2 --position auto-left \
     > "$logdir/left.log" 2>&1 || { cat "$logdir/left.log"; echo "od-sender run failed"; exit 1; }
   cat "$logdir/left.log"
   grep -q "virtual display Virtual-od-[0-9a-f]* = 1024x768 @60 scale 2 at 0,0" "$logdir/left.log" ||

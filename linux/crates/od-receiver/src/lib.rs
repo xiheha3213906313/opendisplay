@@ -3,11 +3,11 @@
 //! replaces a live one, §1), an optional UDP cursor port
 //! (§6.3), a Bonjour advertisement (§2.1), and a decode/present pipeline.
 
-pub mod discovery;
 #[cfg(feature = "gtk")]
 pub mod gtk_ui;
 pub mod id;
 pub mod input;
+pub mod lan;
 pub mod outputs;
 pub mod power;
 pub mod stats;
@@ -21,13 +21,14 @@ use std::task::Poll;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use opendisplay_lan::MediaStream;
 use opendisplay_proto::control::{ControlMessage, Hello};
 use opendisplay_session::Now;
 use opendisplay_session::receiver::{
     ReceiverAction, ReceiverConfig, ReceiverEvent, ReceiverSession,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
@@ -69,6 +70,7 @@ pub struct Receiver {
     listener: TcpListener,
     udp: Option<UdpSocket>,
     video: Box<dyn VideoOutput>,
+    lan: Option<lan::LanReceiver>,
     /// Pointer input from the window, sent to the sender as touch/scroll.
     input: Option<tokio::sync::mpsc::UnboundedReceiver<UserInput>>,
     /// Sleep notifications (logind in the binary, a fake in tests).
@@ -113,6 +115,7 @@ impl Receiver {
             listener,
             udp,
             video,
+            lan: None,
             input: None,
             power: None,
         })
@@ -143,11 +146,19 @@ impl Receiver {
 
     /// Serve until `shutdown` flips to true. Sends `closing` to a live sender
     /// on the way out.
+    pub fn with_lan(mut self, lan: lan::LanReceiver) -> Self {
+        self.lan = Some(lan);
+        self.udp = None;
+        self.cfg.hello.cursor_port = None;
+        self
+    }
+
     pub async fn run(mut self, mut shutdown: watch::Receiver<bool>) -> Result<Report> {
         let start = Instant::now();
         let mut report = Report::default();
         let mut sess = ReceiverSession::new(ReceiverConfig::new(self.cfg.hello.clone()));
-        let mut current: Option<TcpStream> = None;
+        let mut current: Option<MediaStream> = None;
+        let mut secure_peer = None;
         let mut peer: Option<SocketAddr> = None;
         let mut newcomers: Vec<Newcomer> = Vec::new();
         let mut buf = vec![0u8; 1 << 20];
@@ -175,8 +186,17 @@ impl Receiver {
                     if *shutdown.borrow() { break; } else { continue; }
                 }
                 accepted = self.listener.accept() => {
-                    let (mut stream, addr) = accepted.context("accept")?;
-                    let _ = stream.set_nodelay(true);
+                    let (socket, addr) = accepted.context("accept")?;
+                    if let Some(lan) = self.lan.as_mut() {
+                        if current.is_none() { lan.accept(socket, addr); }
+                        continue;
+                    }
+                    if !addr.ip().is_loopback() {
+                        warn!("Update OpenDisplay on the computer to connect over Wi-Fi.");
+                        continue;
+                    }
+                    let _ = socket.set_nodelay(true);
+                    let mut stream: MediaStream = Box::new(socket);
                     report.connections += 1;
                     if current.is_some() {
                         // §1, §6.4: a newcomer proves itself with bytes before
@@ -199,6 +219,41 @@ impl Receiver {
                     current = Some(stream);
                     peer = Some(addr);
                     sess.handle(now(start), ReceiverEvent::Connected)
+                }
+                event = next_lan_event(&mut self.lan) => {
+                    let Some(lan) = self.lan.as_mut() else { continue };
+                    match event {
+                        lan::Event::Connected(link, address) if current.is_none() => {
+                            lan.remember(link.id);
+                            secure_peer = Some(link.id);
+                            current = Some(link.stream);
+                            peer = Some(address);
+                            report.connections += 1;
+                            sess.handle(now(start), ReceiverEvent::Connected)
+                        }
+                        lan::Event::Command(lan::Command::Connect(peer)) if current.is_none() => {
+                            lan.connect(peer, opendisplay_lan::Intent::Connect);
+                            continue;
+                        }
+                        lan::Event::Command(lan::Command::Forget(id)) => {
+                            lan.forget(id);
+                            if secure_peer == Some(id) {
+                                current = None;
+                                sess.handle(now(start), ReceiverEvent::Disconnected)
+                            } else { continue; }
+                        }
+                        lan::Event::Command(lan::Command::Disconnect) => {
+                            lan.pause();
+                            if let Some(mut stream) = current.take() {
+                                if let ReceiverAction::Send(bytes) = sess.control(&ControlMessage::SessionDisconnect) {
+                                    let _ = tokio::time::timeout(Duration::from_millis(300), stream.write_all(&bytes)).await;
+                                }
+                                tokio::spawn(hang_up(stream, HANG_UP_WITHIN));
+                            }
+                            sess.handle(now(start), ReceiverEvent::Disconnected)
+                        }
+                        _ => continue,
+                    }
                 }
                 (i, read) = read_newcomers(&mut newcomers, &mut newcomer_buf) => {
                     let n = newcomers.swap_remove(i);
@@ -280,6 +335,15 @@ impl Receiver {
                     sess.handle(now(start), ReceiverEvent::CursorDatagram { flow: h.finish(), payload: &udp_buf[..n] })
                 }
                 _ = tick.tick() => {
+                    if let Some(lan) = self.lan.as_mut() {
+                        let connected = current.is_some();
+                        lan.status.send_if_modified(|status| {
+                            let changed = status.connected != connected;
+                            status.connected = connected;
+                            changed
+                        });
+                        if !connected { lan.resume(); }
+                    }
                     newcomers.retain(|n| {
                         let keep = n.since.elapsed() < NEWCOMER_PROVES_WITHIN;
                         if !keep {
@@ -389,6 +453,13 @@ impl Receiver {
                         );
                     }
                     ReceiverAction::SenderHealth(p) => debug!("sender health {p:?}"),
+                    ReceiverAction::SenderPaused => {
+                        if let Some(lan) = self.lan.as_ref() {
+                            lan.pause();
+                        }
+                        current = None;
+                        sess.handle(now(start), ReceiverEvent::Disconnected);
+                    }
                     ReceiverAction::Close(reason) => {
                         report.closes += 1;
                         info!("closing connection: {reason:?}");
@@ -425,7 +496,7 @@ const NEWCOMER_PROVES_WITHIN: Duration = Duration::from_secs(5);
 /// A connection that arrived while a session was live and has not sent
 /// anything yet.
 struct Newcomer {
-    stream: TcpStream,
+    stream: MediaStream,
     addr: SocketAddr,
     since: Instant,
 }
@@ -457,7 +528,7 @@ const HANG_UP_WITHIN: Duration = Duration::from_millis(500);
 /// Dropping a socket with unread video in it sends RST, and a sender that
 /// writes a frame before reading the message then fails on that write and
 /// never sees it. Send FIN instead and drain until the sender hangs up.
-async fn hang_up(mut s: TcpStream, within: Duration) {
+async fn hang_up(mut s: MediaStream, within: Duration) {
     let _ = s.shutdown().await;
     let mut buf = vec![0u8; 64 * 1024];
     let _ = tokio::time::timeout(within, async {
@@ -466,9 +537,16 @@ async fn hang_up(mut s: TcpStream, within: Duration) {
     .await;
 }
 
-async fn read_current(current: &mut Option<TcpStream>, buf: &mut [u8]) -> std::io::Result<usize> {
+async fn read_current(current: &mut Option<MediaStream>, buf: &mut [u8]) -> std::io::Result<usize> {
     match current {
         Some(s) => s.read(buf).await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn next_lan_event(lan: &mut Option<lan::LanReceiver>) -> lan::Event {
+    match lan {
+        Some(lan) => lan.event().await,
         None => std::future::pending().await,
     }
 }
@@ -501,6 +579,7 @@ async fn recv_udp(udp: &Option<UdpSocket>, buf: &mut [u8]) -> std::io::Result<(u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::TcpStream;
 
     /// A sender that keeps streaming after `sleeping` and reads it only
     /// later: its writes still go through and the message arrives before
@@ -515,7 +594,7 @@ mod tests {
         sender.write_all(&[0; 4096]).await.unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         rx.write_all(b"sleeping").await.unwrap();
-        let hung = tokio::spawn(hang_up(rx, Duration::from_secs(2)));
+        let hung = tokio::spawn(hang_up(Box::new(rx), Duration::from_secs(2)));
         for _ in 0..3 {
             tokio::time::sleep(Duration::from_millis(50)).await;
             sender

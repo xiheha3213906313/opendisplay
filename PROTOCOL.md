@@ -48,32 +48,29 @@ unless marked normative.
 
 ## 1. Roles and transport
 
-* The **receiver listens** on TCP port **9000** and advertises itself.
-* The **sender connects** to the receiver.
-
-This role assignment is the most load-bearing decision in the protocol and
-MUST be preserved: because the receiver is always the listening end, the
-sender reaches it identically over WiFi (dial the discovered address) and
-over USB (dial a tunneled port), and one code path serves both transports.
+* On a wired attachment the sender opens the stream and the receiver sends
+  `hello`. Port **9000** remains the usbmuxd and direct-cable TCP port.
+* On paired LAN either application can open TCP. The receiver still sends
+  the first media message, `hello`, after both peers authenticate.
 
 * The protocol runs over a **single TCP connection**. Video, control
   messages, and telemetry all share it, in both directions. The one
   optional exception is the UDP cursor side channel (section 6.3), which
   carries nothing a receiver cannot also get over TCP.
-* There is no TLS and no authentication at `pv` 3. The protocol is designed
-  for trusted local networks and direct cables. Implementations SHOULD
-  disable Nagle's algorithm (TCP_NODELAY); input events are tiny packets and
-  coalescing them reads as input lag.
+* The LAN transport wraps the existing framing in TLS. The media version
+  remains independent of the LAN handshake. Direct cables keep their own
+  transport. Disable Nagle's algorithm (TCP_NODELAY) for responsive input.
 * A receiver serves **one sender at a time**. When a new inbound connection
   arrives while one is active, the receiver MUST adopt the new connection
   and drop the old one once the newcomer proves itself with bytes: it
   greets the newcomer with a provisional `hello` (without `cursorPort`),
-  keeps serving the live sender, and switches when the newcomer's first
+  keeps serving the live sender, and switches when the wired newcomer's first
   bytes arrive, handing those bytes to the new session. A newcomer that
   closes or stays silent is dropped and the live session is untouched; it
   may be the loser of a sender's dial race or a probe (6.4). Adopting
   cancels the old connection, resets decoder state and sends the full
-  `hello`.
+  `hello`. LAN candidates authenticate before adoption and cannot replace a
+  healthy session by sending ordinary media bytes.
 
 ## 2. Transport bindings
 
@@ -84,21 +81,43 @@ touching anything else in this document.
 
 ### 2.1 WiFi / LAN (Bonjour)
 
-The receiver advertises a Bonjour (mDNS/DNS-SD) service:
+The sender advertises `_od-sender._tcp`. The receiver advertises
+`_od-receiver._tcp`. Both advertise their TLS port, a display name, and TXT
+keys `id` (the lowercase installation UUID) and `auth=1`. Names are for
+display and can change. The authenticated receiver UUID must match its
+media `hello.id`.
 
-* **Type:** `_opensidecar._tcp`
-* **Name:** a human-readable, user-editable device name (defaults to the
-  device's name). The name is display-only. It MUST NOT be used as a device
-  identity: users rename devices, and two devices can share a name.
-* **TXT record keys:**
+Either peer can open TCP, using TLS 1.3 and ALPN `opendisplay/1`. Application
+data starts after TLS and uses a 32-byte exporter labeled
+`EXPORTER-OpenDisplay-LAN-v1`. The only traffic allowed before pairing or
+session authentication is the handshake in
+[LANHandshake.c](Pairing/LANHandshake.c).
 
-| Key | Value | Since | Meaning |
-|---|---|---|---|
-| `id` | UUID string | pv 1 era | Stable per-install identity. MUST equal the `id` later sent in `hello`. Lets a sender recognize "same device, different transport/name". |
-| `pv` | decimal integer as string, e.g. `"3"` | pv 2 | The receiver's protocol version. Absent means `pv` 1. Lets a sender evaluate compatibility before dialing. |
+Both peers send the `OD` magic, protocol version 1, the sender/receiver role
+(1/0), a request byte (accept 0, manual 1, resume 2), the receiver or sender's
+36-byte lowercase ASCII UUID, and a one-byte length with up to 120 UTF‑8
+bytes of device name. Exactly one peer sends an accept request. Each side
+then sends a flag indicating whether it holds the other peer's key.
 
-Senders MUST tolerate an absent TXT record and absent keys (pre-`pv` 2
-receivers advertise neither).
+For first-time pairing, the receiver shows a six-digit code valid for two
+minutes. The sender enters it locally. Both sides use BoringSSL SPAKE2 with
+the code bound to the TLS exporter, ordered installation IDs, request,
+initiator and authentication mode. Each attempt uses a fresh share. The
+receiver allows up to five attempts. Both sides verify the peer's key
+confirmation and store the resulting 32-byte key. Subsequent sockets use
+fresh proofs bound to their TLS exporter. An unknown or forgotten pair
+cannot resume. LAN carries cursor updates inside TLS.
+
+After authentication the existing framing begins with the receiver's
+`hello`. The `sessionDisconnect` control message clears automatic resume.
+Application exit, backgrounding, and link loss preserve eligibility to
+reconnect. A successful wired session clears LAN resume for that receiver.
+A fresh manual connection may select LAN again.
+
+The old `_opensidecar._tcp` service remains for direct Mac cables and
+recognizing receivers that need updating. The raw TCP receiver allows
+usbmxd and local test loopback, or a verified direct wired path for the
+Mac receiver. Ordinary LAN uses paired TLS.
 
 ### 2.2 USB (Apple devices)
 
@@ -136,7 +155,7 @@ The sender sends the Android Open Accessory control requests
 | 0 manufacturer | `OpenDisplay` | MUST match the receiver's `accessory_filter.xml` |
 | 1 model | `OpenDisplay Receiver` | MUST match the receiver's `accessory_filter.xml` |
 | 2 description | `Second display over USB` | |
-| 3 version | `1` | |
+| 3 version | `2` | Receiver may use resumable AOA records. Older receivers send raw `hello`. |
 | 4 URI | `https://opendisplay.app` | Offered by Android when no app matches |
 | 5 serial | `1` | |
 
@@ -145,11 +164,16 @@ The device re-enumerates as an accessory (vendor `0x18D1`, product
 matching app, asking the user once. The accessory interface's bulk OUT/IN
 pair carries the stream, sender to receiver and back. Rules:
 
-* One attachment is one session. The receiver MUST NOT reuse an attachment
-  after its session ended: half a frame may still sit in the device's
-  buffer. The sender ends a session by resetting the device, which returns
-  it to its normal USB mode; the next session starts with a fresh
-  handshake.
+* Version 1 carries raw media. The Mac detects an older receiver by the
+  length prefix of its first `hello`. Ending its session resets the
+  accessory and a later connection starts on a fresh attachment.
+* Version 2 starts with `ODU2`, followed by COBS records bracketed by zero
+  delimiters. Records start with a one-byte kind and a 16-byte random
+  epoch. Kind 1 announces a fresh epoch and has no payload. Kind 2 carries
+  up to 15 KiB of ordinary framed media. On reopening, the receiver
+  announces a new epoch before sending `hello`. Both sides discard records
+  from retired epochs. Physical unplug or explicit disconnect ends the
+  attachment.
 * The receiver MUST read with 16 KB buffers (the device keeps one 16 KB
   request in flight; shorter reads can lose data) and MUST treat a
   zero-length read as a zero-length packet, not as end of stream.
@@ -158,7 +182,8 @@ pair carries the stream, sender to receiver and back. Rules:
   write waits in the device's request until more data arrives.
 * Because every dial opens the app on the device, a receiver leaving the
   foreground while the screen is on announces `closing` rather than
-  `sleeping` on this transport, so the sender does not redial it.
+  `sleeping` on this transport. A version-2 sender waits for the
+  receiver to come back over the existing USB attachment.
 
 ## 3. Framing
 
@@ -834,15 +859,11 @@ apps send theirs every **2 s**. An implementation MAY use different
 timeouts but SHOULD keep the 2 s ping cadence so it stays comfortably
 inside its peer's window.
 
-Reconnection policy is the dialing sender's business, not the protocol's.
-For the record, the official sender: redials ~1 s after a failure, gives
-each dial attempt 5 s (a dial to a withdrawn Bonjour name hangs forever
-otherwise), and gives a previously connected device a **10 s grace**
-before declaring the session over. It ends sooner when the evidence is
-unambiguous: after `closing`, after a few actively refused dials in a row
-(reachable device, nothing listening), or when the receiver's Bonjour
-service withdraws while the connection is down. `sleeping` also ends the
-session, but the sender keeps waiting for the device to come back.
+Wired USB and a direct Mac cable stay on their original transport.
+Pulling the cable ends that session. A paired LAN receiver can reconnect to
+its last sending computer when it returns to the foreground and rediscovers
+that peer. The Mac keeps the display during its short link-loss grace and
+can rebuild it if that grace elapsed.
 
 ## 9. Session lifecycle
 

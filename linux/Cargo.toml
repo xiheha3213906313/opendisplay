@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/opendisplay-proto",
+    "crates/opendisplay-lan",
     "crates/opendisplay-session",
     "crates/od-fake-sender",
     "crates/od-receiver",
@@ -17,6 +18,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 opendisplay-proto = { path = "crates/opendisplay-proto" }
+opendisplay-lan = { path = "crates/opendisplay-lan" }
 opendisplay-session = { path = "crates/opendisplay-session" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }

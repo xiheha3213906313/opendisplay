@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use mdns_sd::{ServiceDaemon, ServiceEvent};
-use opendisplay_proto::SERVICE_TYPE;
+use opendisplay_lan::RECEIVER_SERVICE;
 use tracing::info;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -121,7 +121,7 @@ fn browse(
     mut on_found: impl FnMut(Found, &mut Option<Instant>) -> bool,
 ) -> Result<()> {
     let daemon = ServiceDaemon::new().context("starting mDNS browser")?;
-    let ty = format!("{SERVICE_TYPE}.local.");
+    let ty = RECEIVER_SERVICE.to_string();
     let rx = daemon.browse(&ty).context("browsing")?;
     loop {
         let wait = match deadline {

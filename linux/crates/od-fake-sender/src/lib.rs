@@ -331,7 +331,7 @@ async fn apply(
                 summary.sleeping_received += 1;
                 info!("receiver sleeping");
             }
-            SenderAction::ReceiverClosing => {
+            SenderAction::ReceiverClosing | SenderAction::ReceiverPaused => {
                 summary.closing_received += 1;
                 info!("receiver closing");
             }

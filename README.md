@@ -50,8 +50,8 @@ pipeline, USB transport, input injection) are already working.
 - 🔌 **USB-wired for lowest latency** — streams over the Lightning/USB-C
   cable via macOS's built-in `usbmuxd`; plug in and go, no network, no
   WiFi jitter, no helper tools.
-- 📶 **WiFi with zero config** — the iPhone advertises itself via Bonjour;
-  pick it from a dropdown on the Mac.
+- 📶 **Paired Wi-Fi** — choose a device from either app. On first connection,
+  enter the six-digit code shown on the receiver into OpenDisplay on the Mac.
 - 🔍 **Retina / HiDPI** — the virtual display matches the device panel
   pixel-for-pixel (@2x), so text is sharp.
 - 👆 **Touch input built in** — your iPhone becomes a touchscreen for macOS:
@@ -67,6 +67,19 @@ pipeline, USB transport, input injection) are already working.
   over WiFi or a Thunderbolt/Ethernet cable, at native Retina resolution.
 - 🔒 **Self-hosted & private** — your screen never touches anyone's server.
   Two small apps, one TCP connection, that's it.
+
+### Connect over Wi-Fi or USB
+
+Install a current version on both devices. Open the receiver and select the
+computer, or choose the receiver in Devices on the Mac. On the first Wi-Fi
+connection, enter the receiver's six-digit code on the sending computer.
+The receiver resumes its last Wi-Fi session when you reopen it. Choose
+Disconnect to pause automatic resume or forget the pairing to require a new code.
+
+You can plug in multiple devices using USB data cables. Each eligible device
+connects independently. Android may ask for its system USB accessory permission.
+If the phone exposes charging only, select File transfer so the Mac can identify
+it. After unplugging, choose the receiver manually to switch to Wi-Fi.
 
 ## Comparison
 

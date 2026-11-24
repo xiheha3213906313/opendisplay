@@ -281,6 +281,7 @@ final class StreamReceiver: ObservableObject {
     func setServiceName(_ name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolved = trimmed.isEmpty ? fallbackServiceName : trimmed
+        Task { @MainActor in self.lan.updateName(resolved) }
         queue.async {
             guard resolved != self.serviceName else { return }
             self.serviceName = resolved
@@ -364,7 +365,91 @@ final class StreamReceiver: ObservableObject {
         displayLayer.videoGravity = .resizeAspect
     }
 
-    func start(port: UInt16 = 9000) {
+    @MainActor private(set) lazy var lan = makeLAN()
+    private var securePeer: String?
+    @MainActor private var lastResumeAttempt: Date?
+    @MainActor private var resumeTask: Task<Void, Never>?
+
+    @MainActor private func makeLAN() -> LANService {
+        let service = LANService(role: .receiver, id: Self.installID,
+                                 name: fallbackServiceName, queue: queue)
+        service.allow = { [weak self] id, request in
+            guard let self else { return false }
+            if request == .manual { return !self.connected }
+            return self.resumePeerID == id && !self.connected
+        }
+        service.onPeersChanged = { [weak self] in self?.scheduleLANResume() }
+        service.onForgot = { [weak self] id in
+            guard let self, self.resumePeerID == id else { return }
+            self.disconnectLAN()
+        }
+        service.onConnected = { [weak self] link in
+            guard let self, !self.connected else { return false }
+            self.queue.async {
+                guard self.connection == nil else { link.connection.cancel(); return }
+                self.transport = "WiFi"
+                self.adopt(link.connection, authenticatedPeer: link.id)
+            }
+            return true
+        }
+        return service
+    }
+
+    @MainActor private var resumePeerID: String? {
+        get { UserDefaults.standard.string(forKey: "lan.receiver.resumePeer") }
+        set { UserDefaults.standard.set(newValue, forKey: "lan.receiver.resumePeer") }
+    }
+
+    @MainActor func setLANActive(_ active: Bool) {
+        if active {
+            lan.start()
+            scheduleLANResume()
+        } else {
+            resumeTask?.cancel()
+            resumeTask = nil
+            lan.stop()
+        }
+    }
+
+    @MainActor private func scheduleLANResume() {
+        guard !connected, let id = resumePeerID, resumeTask == nil,
+              lan.peers.contains(where: { $0.id == id }) else { return }
+        resumeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let since = self.lastResumeAttempt.map { Date().timeIntervalSince($0) } ?? 5
+            if since < 5 { try? await Task.sleep(nanoseconds: UInt64((5 - since) * 1_000_000_000)) }
+            self.resumeTask = nil
+            guard !Task.isCancelled, !self.connected, self.resumePeerID == id,
+                  let peer = self.lan.peers.first(where: { $0.id == id }) else { return }
+            self.lastResumeAttempt = Date()
+            self.lan.connect(to: peer, request: .resume)
+            self.scheduleLANResume()
+        }
+    }
+
+    @MainActor func disconnectLAN() {
+        resumePeerID = nil
+        queue.async {
+            guard let conn = self.connection else { return }
+            self.sendControl(["type": "sessionDisconnect"], on: conn) {
+                self.queue.async {
+                    if self.connection === conn { self.dropConnection(conn) }
+                }
+            }
+        }
+    }
+
+    private func dropConnection(_ conn: NWConnection) {
+        guard connection === conn else { return }
+        connection = nil
+        securePeer = nil
+        conn.cancel()
+        resetStreamState()
+        setConnected(false)
+    }
+
+    @MainActor func start(port: UInt16 = 9000) {
+        setLANActive(true)
         self.port = port
         queue.async {
             self.startListener()
@@ -377,7 +462,8 @@ final class StreamReceiver: ObservableObject {
     /// connection and the listener, and silence the liveness timers. The Mac
     /// app calls this when the user leaves receiver mode or quits; the
     /// instance is discarded afterwards (start() re-arms if it isn't).
-    func stop(completion: (() -> Void)? = nil) {
+    @MainActor func stop(completion: (() -> Void)? = nil) {
+        setLANActive(false)
         queue.async {
             self.pingTimer?.cancel(); self.pingTimer = nil
             self.watchdogTimer?.cancel(); self.watchdogTimer = nil
@@ -392,7 +478,8 @@ final class StreamReceiver: ObservableObject {
     /// Recreate the listener if it isn't healthy — called when the app
     /// returns to the foreground (iOS may have torn it down while suspended,
     /// or enterSleep deliberately took it down on lock).
-    func ensureListening() {
+    @MainActor func ensureListening() {
+        setLANActive(true)
         queue.async {
             guard !self.listenerHealthy else { return }
             Log.info("listener not healthy — restarting")
@@ -429,7 +516,8 @@ final class StreamReceiver: ObservableObject {
     /// accept connections, or the Mac's wake retries would rebuild the
     /// display before anyone can see it. ensureListening() re-arms
     /// everything when the scene becomes active again.
-    func enterSleep(completion: (() -> Void)? = nil) {
+    @MainActor func enterSleep(completion: (() -> Void)? = nil) {
+        setLANActive(false)
         closeSession(announcing: WireMessage.sleeping,
                      status: "Asleep — resumes on wake", completion: completion)
     }
@@ -437,7 +525,8 @@ final class StreamReceiver: ObservableObject {
     /// The app is being terminated (user swiped it away). Same close, but
     /// announced as "closing": quitting the app is deliberate, so the Mac
     /// ends the session without waiting around for a wake.
-    func shutDown(completion: (() -> Void)? = nil) {
+    @MainActor func shutDown(completion: (() -> Void)? = nil) {
+        setLANActive(false)
         closeSession(announcing: WireMessage.closing,
                      status: "Closed", completion: completion)
     }
@@ -608,57 +697,43 @@ final class StreamReceiver: ObservableObject {
         listener?.service = advertisedService
         listener?.newConnectionHandler = { [weak self] conn in
             guard let self else { return }
-            Log.info("new connection from \(String(describing: conn.endpoint))")
-            // usbmux-forwarded (cable) connections arrive from loopback;
-            // anything else came over the network.
-            let peer = String(describing: conn.endpoint)
-            self.transport = (peer.hasPrefix("127.0.0.1") || peer.hasPrefix("::1")
-                              || peer.hasPrefix("localhost")) ? "USB" : "WiFi"
-            // A Bonjour dial races IPv6 and IPv4 and both handshakes can
-            // complete; the sender cancels its loser within milliseconds.
-            // Adopting every newcomer at once evicted the winner for a
-            // connection that was already dying (seen in the field as a
-            // reset-by-peer storm). With a connection in hand, a newcomer
-            // has to stay alive for a moment before it replaces it.
-            // A closed socket still reads as .ready until a receive hits
-            // EOF, so the proof is bytes: greet the newcomer and adopt it
-            // the moment it streams something back; a socket that closes
-            // or errors first is discarded and the session stays put.
-            if let current = self.connection, current.state != .cancelled,
-               !Self.isFailed(current.state) {
-                self.pendingConnections.append(conn)
-                conn.stateUpdateHandler = { [weak self] state in
-                    guard let self, case .ready = state else { return }
-                    // This socket has not won the session yet. Keep cursor UDP
-                    // out of its provisional hello: otherwise its flow could
-                    // arrive before adopt(), then be indistinguishable from
-                    // the old session's flow that adopt must retire.
-                    self.sendHello(on: conn, includeCursorPort: false)
-                    conn.receive(minimumIncompleteLength: 1, maximumLength: 1 << 18) {
-                        [weak self] data, _, isComplete, error in
-                        guard let self else { return }
-                        // Only a still-tracked candidate may adopt: adoption
-                        // of a rival and stop() both clear the list, so a
-                        // late callback can't evict a session or resurrect a
-                        // stopped receiver.
-                        guard self.pendingConnections.contains(where: { $0 === conn }) else {
-                            conn.cancel()
-                            return
-                        }
+            self.pendingConnections.append(conn)
+            conn.stateUpdateHandler = { [weak self] state in
+                guard let self, self.pendingConnections.contains(where: { $0 === conn }) else { return }
+                switch state {
+                case .ready:
+                    let direct = self.deviceKind == "Mac" && DirectCable.carries(conn)
+                    let loopback = conn.currentPath?.usesInterfaceType(.loopback) == true
+                    guard direct || loopback else {
                         self.pendingConnections.removeAll { $0 === conn }
-                        if let data, !data.isEmpty {
-                            self.adopt(conn, greeted: true, initialData: data)
-                        } else {
-                            Log.info("ignored a twin connection that closed at once"
-                                     + (error.map { " (\($0))" } ?? ""))
-                            conn.cancel()
-                        }
-                        _ = isComplete
+                        self.setStatus("Update OpenDisplay on the computer to connect over Wi-Fi.")
+                        conn.cancel()
+                        return
                     }
+                    if self.connection == nil {
+                        self.transport = direct ? "Cable" : "USB"
+                        self.adopt(conn)
+                    } else {
+                        self.sendHello(on: conn, includeCursorPort: false)
+                        conn.receive(minimumIncompleteLength: 1, maximumLength: 1 << 18) {
+                            [weak self] data, _, _, _ in
+                            guard let self, self.pendingConnections.contains(where: { $0 === conn }) else { return }
+                            self.pendingConnections.removeAll { $0 === conn }
+                            guard let data, !data.isEmpty else { conn.cancel(); return }
+                            self.transport = direct ? "Cable" : "USB"
+                            self.adopt(conn, greeted: true, initialData: data)
+                        }
+                    }
+                case .failed, .cancelled:
+                    self.pendingConnections.removeAll { $0 === conn }
+                default: break
                 }
-                conn.start(queue: self.queue)
-            } else {
-                self.adopt(conn)
+            }
+            conn.start(queue: self.queue)
+            self.queue.asyncAfter(deadline: .now() + 5) {
+                guard self.pendingConnections.contains(where: { $0 === conn }) else { return }
+                self.pendingConnections.removeAll { $0 === conn }
+                conn.cancel()
             }
         }
         listener?.stateUpdateHandler = { [weak self] state in
@@ -686,7 +761,10 @@ final class StreamReceiver: ObservableObject {
     /// without the cursor port while it proved itself (see the listener), with
     /// the bytes it sent back in `initialData`. Once adopted, the full hello
     /// opens a cursor flow that unambiguously belongs to this session.
-    private func adopt(_ conn: NWConnection, greeted: Bool = false, initialData: Data? = nil) {
+    private func adopt(_ conn: NWConnection, greeted: Bool = false, initialData: Data? = nil,
+                       authenticatedPeer: String? = nil) {
+        securePeer = authenticatedPeer
+        Task { @MainActor in self.resumePeerID = authenticatedPeer }
         if greeted { Log.info("newcomer proved itself — adopting it as the session") }
         connection?.cancel()
         connection = conn
@@ -716,17 +794,17 @@ final class StreamReceiver: ObservableObject {
             self.lastDataReceived = Date()
             // Non-loopback is WiFi only if the path says so: a Mac receiver on
             // a Thunderbolt Bridge or USB-C peer link is a cable too.
-            if self.transport != "USB", let path = conn.currentPath {
+            if self.securePeer == nil, self.transport != "USB", let path = conn.currentPath {
                 self.transport = path.usesInterfaceType(.wifi) ? "WiFi" : "Cable"
             }
             self.setConnected(true)
-            self.sendHello(on: conn)
+            self.sendHello(on: conn, includeCursorPort: self.securePeer == nil)
         }
         conn.stateUpdateHandler = { [weak self] state in
             guard let self, conn === self.connection else { return }   // replaced: stay quiet
             switch state {
             case .ready: onReady()
-            case .failed, .cancelled: self.setConnected(false)
+            case .failed, .cancelled: self.dropConnection(conn)
             default: break
             }
         }
@@ -773,7 +851,7 @@ final class StreamReceiver: ObservableObject {
                 // A cable was plugged (or pulled) mid-session: tell the sender,
                 // it re-probes on the fresh list (PROTOCOL.md 6.4).
                 Log.info("reachable addresses changed — re-sending hello")
-                self.sendHello(on: conn)
+                self.sendHello(on: conn, includeCursorPort: self.securePeer == nil)
             }
             addrWatch.resume()
             addrWatchTimer = addrWatch
@@ -786,9 +864,7 @@ final class StreamReceiver: ObservableObject {
             guard let self, let conn = self.connection, conn.state == .ready,
                   Date().timeIntervalSince(self.lastDataReceived) > 5 else { return }
             Log.info("watchdog: nothing from the Mac for >5s — dropping connection")
-            conn.cancel()
-            self.connection = nil
-            self.setConnected(false)
+            self.dropConnection(conn)
         }
         watchdog.resume()
         watchdogTimer = watchdog
@@ -840,6 +916,9 @@ final class StreamReceiver: ObservableObject {
                 self.cursorSprite = (image, anchor, normSize)
                 self.onCursorImage?(image, anchor, normSize)
             }
+        case "sessionDisconnect":
+            Task { @MainActor in self.resumePeerID = nil }
+            if let conn = connection { queue.async { self.dropConnection(conn) } }
         case WireMessage.welcome:
             // The Mac identified itself (issue #132). If it speaks a protocol
             // older than we support, it's the Mac that needs updating — and an
@@ -1119,11 +1198,12 @@ final class StreamReceiver: ObservableObject {
             }
             if let error {
                 Log.info("receive error: \(error)")
+                self.dropConnection(conn)
                 return
             }
             if isComplete {
                 Log.info("peer closed connection")
-                self.setConnected(false)
+                self.dropConnection(conn)
                 return
             }
             self.receive(on: conn)
@@ -1576,6 +1656,7 @@ final class StreamReceiver: ObservableObject {
             self.connected = value
             if !value {
                 self.macProtocolVersion = WireProtocol.assumedWhenAbsent
+                Task { @MainActor in self.scheduleLANResume() }
             }
         }
         if !value { setStatus("Ready to connect") }

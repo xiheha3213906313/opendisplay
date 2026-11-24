@@ -13,10 +13,8 @@ come back as pointer input, and rotating the device rebuilds the virtual
 display in portrait.
 
 It speaks the same protocol as the Mac sender ([PROTOCOL.md](../PROTOCOL.md)),
-so the receivers from the App Store, Google Play and the releases page work
-unchanged. There is no account, no server and no telemetry: one connection
-between the two devices. **The stream is not encrypted**, so use it on a
-network you trust.
+with the paired LAN transport. Update both peers to use Wi-Fi. Video, input
+and control use one TLS connection between the devices.
 
 Video is encoded on the CPU for now (x264); hardware encoding (VA-API) is
 planned.
@@ -95,7 +93,7 @@ machines. To update, run `git pull && makepkg -si` in the same directory.
 
 ### From source
 
-You need Rust (stable), FFmpeg and PipeWire with their headers, `pkgconf` and
+You need Rust (stable), CMake, FFmpeg and PipeWire with their headers, `pkgconf` and
 `clang` (for the FFmpeg bindings); on x86_64 also `nasm`.
 
 ```sh
@@ -115,6 +113,16 @@ cargo build --release -p od-sender
 ```
 
 ## Usage
+
+For a receiver-initiated connection, run `od-sender serve` and select the
+computer on the receiver. Enter the receiver's six-digit code in the sending
+terminal. With `od-sender run`, select the receiver on the command line and
+complete the same first-time pairing. Keep the command running for automatic
+resume. Use `od-sender forget <receiver-id>` to remove a pairing.
+
+The GTK receiver lists nearby sending computers on its idle page. A headless
+receiver displays first-time codes in its foreground terminal. Use
+`od-receiver --forget-peer <sender-id>` to remove a pairing from the terminal.
 
 Open the OpenDisplay app on the receiver, in the foreground and on the same
 Wi-Fi as your computer. Receivers: iPhone and iPad from the App Store,

@@ -47,11 +47,20 @@ targets:
     sources:
       - Mac
       - Shared
+      - path: Pairing/licenses
+        buildPhase: resources
     dependencies:
       - package: Sparkle
     postBuildScripts:
       - name: Embed Audio Driver Installer
         script: bash "$SRCROOT/MacAudioDriver/embed-package.sh"
+        basedOnDependencyAnalysis: false
+    preBuildScripts:
+      - name: Build LAN Pairing
+        script: bash "$SRCROOT/Pairing/build-apple.sh"
+        outputFiles:
+          - "$(DERIVED_FILE_DIR)/lan-pairing/libodpair.a"
+          - "$(DERIVED_FILE_DIR)/lan-pairing/_deps/boringssl-build/libcrypto.a"
         basedOnDependencyAnalysis: false
     info:
       path: Mac/Info.plist
@@ -62,7 +71,7 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSUIElement: true
         NSLocalNetworkUsageDescription: OpenDisplay connects to your iPad or iPhone over the local network in WiFi mode.
-        NSBonjourServices: ["_opensidecar._tcp"]
+        NSBonjourServices: ["_opensidecar._tcp", "_od-sender._tcp", "_od-receiver._tcp"]
         LSApplicationCategoryType: public.app-category.utilities
         # --- Sparkle auto-update (issue #52) ---
         # The appcast feed is hosted on the landing-page site at the custom
@@ -78,6 +87,8 @@ targets:
         SUEnableAutomaticChecks: true
     settings:
       base:
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Pairing/include"
+        OTHER_LDFLAGS: '$(inherited) "$(DERIVED_FILE_DIR)/lan-pairing/libodpair.a" "$(DERIVED_FILE_DIR)/lan-pairing/_deps/boringssl-build/libcrypto.a" -lc++'
         PRODUCT_BUNDLE_IDENTIFIER: com.peetzweg.opensidecar.mac
         PRODUCT_NAME: OpenDisplay
         BUNDLE_DISPLAY_NAME: OpenDisplay
@@ -112,11 +123,20 @@ targets:
     sources:
       - MacReceiver
       - Shared
+      - path: Pairing/licenses
+        buildPhase: resources
       - Mac/Log.swift
       - Mac/LogPolicies.swift
       - Mac/CheckForUpdatesView.swift
     dependencies:
       - package: Sparkle
+    preBuildScripts:
+      - name: Build LAN Pairing
+        script: bash "$SRCROOT/Pairing/build-apple.sh"
+        outputFiles:
+          - "$(DERIVED_FILE_DIR)/lan-pairing/libodpair.a"
+          - "$(DERIVED_FILE_DIR)/lan-pairing/_deps/boringssl-build/libcrypto.a"
+        basedOnDependencyAnalysis: false
     info:
       path: MacReceiver/Info.plist
       properties:
@@ -125,7 +145,7 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSLocalNetworkUsageDescription: OpenDisplay Receiver advertises itself on the local network so another Mac can connect and use this Mac as a display.
-        NSBonjourServices: ["_opensidecar._tcp"]
+        NSBonjourServices: ["_opensidecar._tcp", "_od-sender._tcp", "_od-receiver._tcp"]
         NSAppleEventsUsageDescription: OpenDisplay Receiver shuts this Mac down when the connected Mac asks it to.
         LSApplicationCategoryType: public.app-category.utilities
         # Own Sparkle feed (separate DMG, same signing key); published by
@@ -135,6 +155,8 @@ targets:
         SUEnableAutomaticChecks: true
     settings:
       base:
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Pairing/include"
+        OTHER_LDFLAGS: '$(inherited) "$(DERIVED_FILE_DIR)/lan-pairing/libodpair.a" "$(DERIVED_FILE_DIR)/lan-pairing/_deps/boringssl-build/libcrypto.a" -lc++'
         PRODUCT_BUNDLE_IDENTIFIER: com.peetzweg.opensidecar.mac.receiver
         PRODUCT_NAME: OpenDisplay Receiver
         BUNDLE_DISPLAY_NAME: OpenDisplay Receiver
@@ -167,6 +189,7 @@ targets:
       - Mac/AudioOutputRouting.swift
       - Mac/RemoteAudioVolume.swift
       - Mac/USBAccessory.swift
+      - Mac/AccessoryRecords.swift
       - Mac/Log.swift
       - Mac/LogPolicies.swift
       - Shared/Protocol.swift
@@ -194,6 +217,15 @@ targets:
     sources:
       - iOS
       - Shared
+      - path: Pairing/licenses
+        buildPhase: resources
+    preBuildScripts:
+      - name: Build LAN Pairing
+        script: bash "$SRCROOT/Pairing/build-apple.sh"
+        outputFiles:
+          - "$(DERIVED_FILE_DIR)/lan-pairing/libodpair.a"
+          - "$(DERIVED_FILE_DIR)/lan-pairing/_deps/boringssl-build/libcrypto.a"
+        basedOnDependencyAnalysis: false
     info:
       path: iOS/Info.plist
       properties:
@@ -208,7 +240,7 @@ targets:
         UIRequiresFullScreen: true
         UIRequiresFullScreenIgnoredStartingWithVersion: "27"
         NSLocalNetworkUsageDescription: OpenDisplay advertises itself on the local network so your Mac can connect over WiFi.
-        NSBonjourServices: ["_opensidecar._tcp"]
+        NSBonjourServices: ["_opensidecar._tcp", "_od-sender._tcp", "_od-receiver._tcp"]
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
@@ -216,6 +248,8 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
     settings:
       base:
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Pairing/include"
+        OTHER_LDFLAGS: '$(inherited) "$(DERIVED_FILE_DIR)/lan-pairing/libodpair.a" "$(DERIVED_FILE_DIR)/lan-pairing/_deps/boringssl-build/libcrypto.a" -lc++'
         PRODUCT_BUNDLE_IDENTIFIER: com.peetzweg.opensidecar.ios
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

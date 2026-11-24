@@ -19,6 +19,8 @@ logind = ["dep:zbus"]
 
 [dependencies]
 opendisplay-proto = { workspace = true }
+opendisplay-lan = { workspace = true }
+
 opendisplay-session = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }

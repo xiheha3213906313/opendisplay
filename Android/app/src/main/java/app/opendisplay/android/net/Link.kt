@@ -17,12 +17,13 @@ internal interface Link : Closeable {
     val transport: String
     /** For the log. */
     val remote: String
+    val authenticated: Boolean get() = false
 }
 
-internal class SocketLink(private val socket: Socket) : Link {
+internal class SocketLink(private val socket: Socket, override val authenticated: Boolean = false) : Link {
     override val input: InputStream get() = socket.getInputStream()
     override val output: OutputStream get() = socket.getOutputStream()
-    override val transport = if (socket.inetAddress.isLoopbackAddress) "USB" else "WiFi"
+    override val transport = if (!authenticated && socket.inetAddress.isLoopbackAddress) "USB" else "WiFi"
     override val remote: String get() = socket.remoteSocketAddress.toString()
     override fun close() = socket.close()
 }

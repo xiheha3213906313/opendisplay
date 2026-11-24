@@ -468,6 +468,8 @@ pub enum ControlMessage {
     Sleeping,
     #[serde(rename = "closing")]
     Closing,
+    #[serde(rename = "sessionDisconnect")]
+    SessionDisconnect,
     #[serde(rename = "cursorAck")]
     CursorAck,
     // Sender -> receiver (§6.2)
@@ -524,6 +526,7 @@ impl ControlMessage {
             ControlMessage::Stats(_) => "stats",
             ControlMessage::Sleeping => "sleeping",
             ControlMessage::Closing => "closing",
+            ControlMessage::SessionDisconnect => "sessionDisconnect",
             ControlMessage::CursorAck => "cursorAck",
             ControlMessage::Pong(_) => "pong",
             ControlMessage::Cursor(_) => "cursor",
@@ -568,6 +571,7 @@ fn is_known_type(kind: &str) -> bool {
             | "stats"
             | "sleeping"
             | "closing"
+            | "sessionDisconnect"
             | "cursorAck"
             | "pong"
             | "cursor"

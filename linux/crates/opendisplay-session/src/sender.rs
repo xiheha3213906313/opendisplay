@@ -69,6 +69,7 @@ pub enum SenderAction {
     ReceiverSleeping,
     /// Receiver quit for good (§6.1).
     ReceiverClosing,
+    ReceiverPaused,
     Close(CloseReason),
     Warn(String),
 }
@@ -343,6 +344,7 @@ impl SenderSession {
             ControlMessage::Stats(v) => out.push(SenderAction::Stats(v)),
             ControlMessage::Sleeping => out.push(SenderAction::ReceiverSleeping),
             ControlMessage::Closing => out.push(SenderAction::ReceiverClosing),
+            ControlMessage::SessionDisconnect => out.push(SenderAction::ReceiverPaused),
             ControlMessage::CursorAck => self.udp_acked = true,
             ControlMessage::Unknown { kind, .. } => {
                 self.counters.control_ignored += 1;

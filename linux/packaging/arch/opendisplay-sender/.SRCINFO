@@ -8,6 +8,7 @@ pkgbase = opendisplay-sender
 	license = GPL-3.0-only
 	makedepends = cargo
 	makedepends = pkgconf
+	makedepends = cmake
 	makedepends = clang
 	depends = ffmpeg
 	depends = libpipewire
@@ -15,7 +16,9 @@ pkgbase = opendisplay-sender
 	depends = glibc
 	options = !lto
 	source = opendisplay-sender-1.30.3.tar.gz::https://github.com/peetzweg/opendisplay/archive/refs/tags/v1.30.3.tar.gz
+	source = boringssl-808b8f3b9d71a055f741d5f7338d206e98747950.tar.gz::https://codeload.github.com/google/boringssl/tar.gz/808b8f3b9d71a055f741d5f7338d206e98747950
 	sha256sums = ba824da2f534315b3ab2ca6ec936a231a020573e6cdfd8f6b8352afeb9eb977f
+	sha256sums = bcd3b4e60d87a20b510e60da05ff0b8fbfc6983d90554925ecad72f59f0c1369
 	makedepends_x86_64 = nasm
 
 pkgname = opendisplay-sender

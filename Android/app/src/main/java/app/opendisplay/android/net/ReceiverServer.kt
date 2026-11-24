@@ -56,6 +56,8 @@ class ReceiverServer(
         fun onSenderVersion(pv: Int)
         fun onUpdateRequired(message: String, store: String?)
         fun onSenderHealth(obj: JSONObject)
+        fun onExplicitDisconnect() {}
+        fun onLegacyWifi() {}
         /** Receiver-side telemetry for the sender's log, every ~5 s. */
         fun statsSnapshot(): JSONObject
     }
@@ -152,7 +154,12 @@ class ReceiverServer(
                     val socket = server.accept()
                     socket.tcpNoDelay = true // tiny input packets must not wait for ACKs
                     socket.keepAlive = true
-                    onAccepted(socket)
+                    if (!socket.inetAddress.isLoopbackAddress) {
+                        closeQuietly(socket)
+                        listener.onLegacyWifi()
+                    } else {
+                        onAccepted(socket)
+                    }
                 }
             } catch (e: IOException) {
                 if (live(gen)) Log.w(TAG, "accept failed: $e; relistening")
@@ -213,11 +220,19 @@ class ReceiverServer(
         return adopt(link, null)
     }
 
-    private fun adopt(link: Link, initial: ByteArray?): Boolean {
+    fun adoptSecure(socket: Socket, beforeAdopt: () -> Boolean): Boolean =
+        adopt(SocketLink(socket, authenticated = true), null, beforeAdopt)
+
+    fun disconnect() {
+        synchronized(lock) { current }?.closeAfter(Messages.simple("sessionDisconnect"))
+    }
+
+    private fun adopt(link: Link, initial: ByteArray?, beforeAdopt: (() -> Boolean)? = null): Boolean {
         val session = Session(link, initial)
         val old: Session?
         synchronized(lock) {
-            if (!running) {
+            if (!running || (beforeAdopt != null &&
+                    (current?.isOpen == true || !beforeAdopt()))) {
                 closeQuietly(link)
                 return false
             }
@@ -245,7 +260,7 @@ class ReceiverServer(
 
     fun sendHello() {
         val session = synchronized(lock) { current } ?: return
-        val hello = helloFactory(cursorChannel?.boundPort)
+        val hello = helloFactory(if (session.link.authenticated) null else cursorChannel?.boundPort)
         session.send(hello)
         Log.i(TAG, "hello sent: $hello")
     }
@@ -306,6 +321,12 @@ class ReceiverServer(
                 "audioStart" -> session.startAudio(obj)
                 "audioStop" -> session.stopAudio(obj.optString("id"))
                 "audioSetVolume" -> scheduleVolumeChange(session, obj)
+                "sessionDisconnect" -> synchronized(lock) {
+                    if (current === session && session.isOpen) {
+                        listener.onExplicitDisconnect()
+                        session.close()
+                    }
+                }
                 else -> dispatchControl(obj)
             }
         } catch (e: Exception) {
@@ -379,7 +400,7 @@ class ReceiverServer(
      * Must not take [lock]: adopt() holds it while calling into the channel.
      */
     private fun onCursorDatagram(obj: JSONObject, newFlow: Boolean): Boolean {
-        if (current == null) return false
+        if (current?.link?.authenticated != false) return false
         if (obj.optString("type") != "cursor") return false
         // The tracker resets on every new UDP flow (6.3).
         if (newFlow) cursorSeq.reset()

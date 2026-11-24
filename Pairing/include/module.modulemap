@@ -1,0 +1,4 @@
+module ODPairing {
+    header "ODPairing.h"
+    export *
+}

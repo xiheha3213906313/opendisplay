@@ -36,6 +36,7 @@ import app.opendisplay.android.R
 import app.opendisplay.android.net.AccessoryLink
 import app.opendisplay.android.net.Advertiser
 import app.opendisplay.android.net.ReceiverServer
+import app.opendisplay.android.net.LANReceiver
 import app.opendisplay.android.protocol.AnnexB
 import app.opendisplay.android.protocol.Codec
 import app.opendisplay.android.protocol.Messages
@@ -76,6 +77,9 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
     private val stats = StreamStats()
 
     private lateinit var installId: String
+    private lateinit var lan: LANReceiver
+    private var pairingDialog: androidx.appcompat.app.AlertDialog? = null
+    private var legacyWifiSeen = false
     // The accessory attachment a session already ran over. One attachment is
     // one session: the sender resets the device to start another, which
     // detaches it, so a used one is never reopened mid-stream.
@@ -129,6 +133,8 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
 
         decoder = VideoDecoder(this).also { it.start() }
         server = ReceiverServer(this, ::buildHello, getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
+        lan = LANReceiver(this, installId, server, ::showPairingCode,
+            { pairingDialog?.dismiss(); pairingDialog = null }, ::refreshComputers)
         advertiser = Advertiser(this)
         val slop = 10 * resources.displayMetrics.density
         gestures = TouchGestures(
@@ -238,13 +244,19 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
     override fun onNameChanged(name: String?) {
         DeviceIdentity.setServiceName(this, name)
         advertiser.register(DeviceIdentity.serviceName(this), installId)
+        lan.rename(DeviceIdentity.serviceName(this))
     }
+
+    override val pairedComputers: Map<String, String> get() = lan.paired
+    override fun forgetComputer(id: String) = lan.forget(id)
+    override fun disconnectDisplay() = lan.disconnect()
 
     override fun onOverlayChanged(enabled: Boolean) = refreshIdle()
 
     override fun onStart() {
         super.onStart()
         server.start()
+        lan.start(DeviceIdentity.serviceName(this))
         advertiser.register(DeviceIdentity.serviceName(this), installId)
         refreshIdle()
         // Launched by the attach intent, or attached while we were away.
@@ -263,6 +275,9 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
     override fun onStop() {
         super.onStop()
         main.removeCallbacks(resendHello)
+        lan.stop()
+        if (usedAccessory?.version == "2") usedAccessory = null
+        main.removeCallbacks(retryAccessory)
         advertiser.unregister()
         val power = getSystemService(POWER_SERVICE) as android.os.PowerManager
         val keyguard = getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager
@@ -277,6 +292,7 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
         if (wifiLock.isHeld) wifiLock.release()
         main.removeCallbacksAndMessages(null)
         decoder.release()
+        lan.destroy()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -297,6 +313,8 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
      * and the sender would redial again. The attachment waits; unlocking
      * starts the activity and takes it here.
      */
+    private val retryAccessory = Runnable { takeAccessory() }
+
     private fun takeAccessory() {
         val keyguard = getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager
         if (keyguard.isKeyguardLocked) return
@@ -316,6 +334,7 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
         val link = AccessoryLink.open(usb, accessory)
         if (link == null) {
             Log.w(TAG, "could not open the USB accessory (permission ${usb.hasPermission(accessory)})")
+            if (accessory.version == "2") main.postDelayed(retryAccessory, 1500)
             return
         }
         if (server.adoptAccessory(link)) usedAccessory = accessory
@@ -376,6 +395,7 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
 
     /** Main thread: reflect connection/picture/sleep state in the views. */
     private fun refreshIdle() {
+        refreshComputers()
         val streaming = connected && hasPicture && !senderAsleep && blockingMessage == null
         idleView.visibility = if (streaming || (connected && senderAsleep)) View.GONE else View.VISIBLE
         statsText.visibility = if (streaming && prefs.showAnalytics) View.VISIBLE else View.GONE
@@ -397,7 +417,8 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
         when {
             message != null -> idleView.setStatus(message, connected = false)
             connected -> idleView.setStatus(getString(R.string.status_waiting_picture), connected = true)
-            else -> idleView.setStatus(getString(R.string.status_ready), connected = false)
+            else -> idleView.setStatus(lan.status ?: if (legacyWifiSeen) getString(R.string.update_wifi_sender)
+                else getString(R.string.status_ready), connected = false)
         }
     }
 
@@ -560,6 +581,34 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
 
     // endregion
 
+    private fun refreshComputers() {
+        if (!::idleView.isInitialized) return
+        idleView.showComputers(if (connected) emptyList() else lan.peers.map { peer ->
+            peer.name to { lan.connect(peer) }
+        })
+        if (!connected) lan.status?.let { idleView.setStatus(it, false) }
+    }
+
+    private fun showPairingCode(name: String, digits: String, cancel: () -> Unit) {
+        onboarding?.dismiss()
+        pairingDialog?.dismiss()
+        pairingDialog = MaterialAlertDialogBuilder(this)
+            .setTitle(getString(R.string.enter_code_on, name))
+            .setMessage(digits)
+            .setNegativeButton(android.R.string.cancel) { _, _ -> cancel() }
+            .setOnCancelListener { cancel() }
+            .show()
+    }
+
+    override fun onLegacyWifi() {
+        main.post {
+            legacyWifiSeen = true
+            refreshIdle()
+        }
+    }
+
+    override fun onExplicitDisconnect() { lan.pause() }
+
     // region ReceiverServer.Listener (network threads)
 
     override fun onSessionStarted(transport: String) {
@@ -571,6 +620,7 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
         decoder.reset()
         main.post {
             connected = true
+            lan.sessionChanged(transport)
             hasPicture = false
             // The first valid connection retires the onboarding for good (iOS).
             prefs.hasConnectedBefore = true
@@ -587,6 +637,7 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
         decoder.reset()
         main.post {
             connected = false
+            lan.sessionChanged(null)
             hasPicture = false
             cursorView.clear()
             refreshIdle()

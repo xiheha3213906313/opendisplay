@@ -182,6 +182,7 @@ jobs:
           # FFmpeg and x264 (from the static prefix), OpenH264, and every
           # Rust crate linked in, with their licence texts.
           python3 -I packaging/third-party-licenses.py . "$FFMPEG_DIR" > "$stage/THIRD-PARTY-LICENSES.txt"
+          cp ../Pairing/licenses/BoringSSL.txt "$stage/BoringSSL-LICENSE.txt"
           # Reproducible: fixed owner, order and timestamps (the commit's).
           mtime="$(git log -1 --format=%ct)"
           tar -C "$RUNNER_TEMP" --sort=name --owner=0 --group=0 --numeric-owner \

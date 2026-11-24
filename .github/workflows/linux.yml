@@ -57,7 +57,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo testbench/apt-install.sh \
-            pkg-config libwayland-dev \
+            cmake pkg-config libwayland-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav \
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libclang-dev \

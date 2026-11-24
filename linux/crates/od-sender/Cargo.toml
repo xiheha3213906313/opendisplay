@@ -20,6 +20,7 @@ gnome = ["pipewire", "dep:zbus", "dep:async-io", "dep:futures-lite"]
 
 [dependencies]
 opendisplay-proto = { workspace = true }
+opendisplay-lan = { workspace = true }
 opendisplay-session = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }

@@ -30,12 +30,14 @@ build-options:
   env:
     CARGO_HOME: /run/build/od-receiver/cargo
     CARGO_NET_OFFLINE: 'true'
+    OD_BORINGSSL_SOURCE: /run/build/od-receiver/boringssl
 modules:
   - name: od-receiver
     buildsystem: simple
     build-commands:
       - cargo build --offline --locked --release --manifest-path linux/Cargo.toml -p od-receiver
       - install -Dm755 linux/target/release/od-receiver /app/bin/od-receiver
+      - install -Dm644 Pairing/licenses/BoringSSL.txt /app/share/licenses/od-receiver/BoringSSL.txt
       - install -Dm644 linux/packaging/arch/opendisplay-receiver/app.opendisplay.Receiver.desktop
         /app/share/applications/app.opendisplay.Receiver.desktop
       - desktop-file-edit --set-key=Exec --set-value=od-receiver
@@ -53,4 +55,8 @@ modules:
           - linux/target
           - build
           - node_modules
+      - type: archive
+        url: https://codeload.github.com/google/boringssl/tar.gz/808b8f3b9d71a055f741d5f7338d206e98747950
+        sha256: bcd3b4e60d87a20b510e60da05ff0b8fbfc6983d90554925ecad72f59f0c1369
+        dest: boringssl
       - cargo-sources.json

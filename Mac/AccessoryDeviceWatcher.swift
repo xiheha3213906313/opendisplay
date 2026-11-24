@@ -211,7 +211,8 @@ final class AccessoryDeviceWatcher {
             asked.remove(entry)
             probes.removeValue(forKey: entry)?.cancel()
             guard let serial = serialByEntry.removeValue(forKey: entry),
-                  devices[serial] != nil else { continue }
+                  devices[serial] != nil,
+                  !serialByEntry.values.contains(serial) else { continue }
             pendingDetach[serial]?.cancel()
             pendingDetach[serial] = Task {
                 try? await Task.sleep(for: Self.detachGrace)

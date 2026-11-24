@@ -49,6 +49,8 @@ private struct ReceiverStatusSection: View {
 
     var body: some View {
         Section("This Mac as a display") {
+            LANReceiverControls(lan: receiver.lan, connected: receiver.connected,
+                                disconnect: receiver.disconnectLAN)
             HStack(alignment: .firstTextBaseline) {
                 Circle()
                     .fill(receiver.connected ? Color.green : Color.orange)

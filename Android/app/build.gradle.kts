@@ -6,6 +6,13 @@ plugins {
 android {
     namespace = "app.opendisplay.android"
     compileSdk = 36
+    ndkVersion = "27.3.13750724"
+    externalNativeBuild {
+        cmake {
+            path = file("../../Pairing/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 
     defaultConfig {
         applicationId = "com.peetzweg.opendisplay"
@@ -14,11 +21,22 @@ android {
         // keeps 21 for Android 5 and 6 devices.
         minSdk = (findProperty("appMinSdk") as String?)?.toInt() ?: 21
         targetSdk = 36
+        externalNativeBuild {
+            cmake {
+                arguments += "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
+                providers.environmentVariable("OD_BORINGSSL_SOURCE").orNull?.let {
+                    arguments += "-DFETCHCONTENT_SOURCE_DIR_BORINGSSL=$it"
+                }
+                targets += "odpair_jni"
+            }
+        }
         // CI passes the shared repo version (release-please) as Gradle
         // properties; local builds fall back to these defaults.
         versionCode = (findProperty("appVersionCode") as String?)?.toInt() ?: 1
         versionName = findProperty("appVersionName") as String? ?: "0.1.0"
     }
+
+    sourceSets["main"].assets.srcDir("../../Pairing/licenses")
 
     buildTypes {
         debug {
@@ -44,6 +62,7 @@ android {
 }
 
 dependencies {
+    implementation("org.conscrypt:conscrypt-android:2.10.0")
     // Off-the-shelf Android UI for the receiver's own screens (settings,
     // onboarding, log), the counterpart of SwiftUI's Form/sheet on iOS.
     // All three still support minSdk 21.

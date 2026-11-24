@@ -44,7 +44,7 @@ enum AOA {
         "OpenDisplay",                  // manufacturer
         "OpenDisplay Receiver",         // model
         "Second display over USB",      // description
-        "1",                            // version
+        "2",                            // version; legacy receivers ignore this field
         "https://opendisplay.app",      // URI
         "1",                            // serial
     ]
@@ -94,6 +94,9 @@ enum AOA {
         // below would end the newer session.
         try Task.checkCancellation()
 
+        if let existing = AccessoryRelay.reusable(serial: serial) {
+            return try await existing.connect(queue: queue, helloTimeout: helloTimeout)
+        }
         AccessoryRelay.close(serial: serial)
         guard var device = try await waitForDevice(serial: serial, timeout: .seconds(5)) else {
             throw Failure.noDevice
@@ -148,7 +151,7 @@ enum AOA {
         do {
             return try await relay.connect(queue: queue, helloTimeout: helloTimeout)
         } catch {
-            relay.close()
+            if !relay.isReusable { relay.close() }
             throw error
         }
     }
@@ -318,6 +321,13 @@ final class AccessoryRelay {
         live.withLock { $0[serial] }?.close()
     }
 
+    static func reusable(serial: String) -> AccessoryRelay? {
+        guard let relay = live.withLock({ $0[serial] }), relay.isReusable else { return nil }
+        return relay
+    }
+
+    private let format = OSAllocatedUnfairLock(initialState: false)
+    var isReusable: Bool { format.withLock { $0 } && !isClosed }
     private let serial: String
     private let service: io_service_t
     private let interface: IOUSBHostInterface
@@ -325,7 +335,16 @@ final class AccessoryRelay {
     private let outPipe: IOUSBHostPipe
     private let maxPacket: Int
     private let listener: NWListener
-    private var accepted: NWConnection?   // networkQueue
+    // All session state lives on networkQueue. The physical read pump
+    // outlives individual loopback connections in version 2.
+    private var accepted: NWConnection?
+    private var reading = false
+    private var undecided = Data()
+    private var choseFormat = false
+    private var decoder = AccessoryRecords.Decoder()
+    private var epoch: Data?
+    private var pending = Data()
+    private var acceptedEpoch: Data?
 
     // Blocking pipe I/O, one thread per direction: a parked read must not
     // hold up writes.
@@ -465,60 +484,104 @@ final class AccessoryRelay {
 
     private func listen() async throws -> NWEndpoint.Port {
         try await withCheckedThrowingContinuation { continuation in
-            let resumed = OSAllocatedUnfairLock(initialState: false)
-            let resume: (Result<NWEndpoint.Port, Error>) -> Void = { result in
-                guard !resumed.withLock({ done in let was = done; done = true; return was }) else { return }
-                continuation.resume(with: result)
-            }
-            listener.stateUpdateHandler = { [weak self] state in
-                switch state {
-                case .ready:
-                    if let port = self?.listener.port { resume(.success(port)) }
-                case .failed(let error):
-                    resume(.failure(error))
-                    self?.close()
-                case .cancelled:
-                    resume(.failure(AOA.Failure.noApp))
-                default:
-                    break
-                }
-            }
-            listener.newConnectionHandler = { [weak self] conn in
-                guard let self, self.accepted == nil else {
-                    conn.cancel()
+            networkQueue.async {
+                if let port = self.listener.port, self.listener.state == .ready {
+                    continuation.resume(returning: port)
                     return
                 }
-                self.accepted = conn
-                self.listener.cancel()   // one connection per attachment
-                conn.stateUpdateHandler = { [weak self] state in
+                guard !self.isClosed else {
+                    continuation.resume(throwing: AOA.Failure.noApp)
+                    return
+                }
+                var waiting = true
+                self.listener.stateUpdateHandler = { [weak self] state in
+                    guard let self, waiting else { return }
                     switch state {
                     case .ready:
-                        self?.pumpToDevice(conn)
-                        self?.readQueue.async { self?.pumpFromDevice(conn) }
-                    case .failed, .cancelled:
-                        self?.close()
-                    default:
-                        break
+                        guard let port = self.listener.port else { return }
+                        waiting = false
+                        continuation.resume(returning: port)
+                    case .failed(let error):
+                        waiting = false
+                        continuation.resume(throwing: error)
+                        self.close()
+                    case .cancelled:
+                        waiting = false
+                        continuation.resume(throwing: AOA.Failure.noApp)
+                    default: break
                     }
                 }
-                conn.start(queue: self.networkQueue)
+                self.listener.newConnectionHandler = { [weak self] conn in self?.accept(conn) }
+                self.listener.start(queue: self.networkQueue)
             }
-            listener.start(queue: networkQueue)
         }
     }
 
-    /// Sender → phone. The next receive waits for the write, so a phone
-    /// that stops reading backs the sender's socket up as TCP would.
+    private func accept(_ conn: NWConnection) {
+        guard !isClosed, accepted == nil else { conn.cancel(); return }
+        accepted = conn
+        acceptedEpoch = epoch
+        conn.stateUpdateHandler = { [weak self] state in
+            guard let self, self.accepted === conn else { return }
+            switch state {
+            case .ready:
+                if !self.pending.isEmpty {
+                    conn.send(content: self.pending, completion: .contentProcessed { _ in })
+                    self.pending.removeAll()
+                }
+                self.pumpToDevice(conn)
+                if !self.reading {
+                    self.reading = true
+                    self.readQueue.async { self.pumpFromDevice() }
+                }
+            case .failed, .cancelled: self.endLogicalSession(conn)
+            default: break
+            }
+        }
+        conn.start(queue: networkQueue)
+    }
+
+    private func endLogicalSession(_ conn: NWConnection) {
+        guard accepted === conn else { return }
+        guard isReusable else { close(); return }
+        accepted = nil
+        if epoch == acceptedEpoch {
+            epoch = nil
+            pending.removeAll()
+        }
+        acceptedEpoch = nil
+        // A v2 receiver may have closed its fd while a bulk read was
+        // blocked. Cancel any in-flight host write before taking a new epoch.
+        try? outPipe.__abort(with: .asynchronous)
+        conn.cancel()
+    }
+
+    /// Sender → phone. Each logical socket is bound to the receiver's epoch.
     private func pumpToDevice(_ conn: NWConnection) {
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 128 * 1024) { [weak self] data, _, ended, error in
+            guard let self, self.accepted === conn else { return }
             guard let data, !data.isEmpty else {
-                if isComplete || error != nil { self.close() } else { self.pumpToDevice(conn) }
+                if ended || error != nil { self.endLogicalSession(conn) }
+                else { self.pumpToDevice(conn) }
                 return
             }
+            let epoch = self.acceptedEpoch
+            let framed = self.isReusable
             self.writeQueue.async {
-                guard self.write(data) else { return self.close() }
-                if isComplete { self.close() } else { self.pumpToDevice(conn) }
+                let ok: Bool
+                if framed, let epoch {
+                    ok = stride(from: 0, to: data.count, by: AccessoryRecords.chunkSize).allSatisfy { offset in
+                        self.write(AccessoryRecords.encode(kind: AccessoryRecords.bytes, epoch: epoch,
+                            payload: data.subdata(in: offset..<min(offset + AccessoryRecords.chunkSize, data.count))))
+                    }
+                } else {
+                    ok = !framed && self.write(data)
+                }
+                self.networkQueue.async {
+                    guard self.accepted === conn else { return }
+                    if ended || !ok { self.endLogicalSession(conn) }
+                    else { self.pumpToDevice(conn) }
+                }
             }
         }
     }
@@ -541,8 +604,8 @@ final class AccessoryRelay {
         }
     }
 
-    /// Phone → sender, until the pipe ends (reset, unplug, close()).
-    private func pumpFromDevice(_ conn: NWConnection) {
+    /// Phone → host. Bound USB-to-loopback buffering to one transfer.
+    private func pumpFromDevice() {
         let buffer = NSMutableData(length: 16 * 1024)!
         while !isClosed {
             var transferred = 0
@@ -552,11 +615,56 @@ final class AccessoryRelay {
                 if !isClosed { Log.info("AOA: read ended: \(error.localizedDescription)") }
                 break
             }
-            guard transferred > 0 else { continue }   // zero-length packet
-            conn.send(content: Data(bytes: buffer.bytes, count: transferred),
-                      completion: .contentProcessed { _ in })
+            guard transferred > 0 else { continue }
+            let data = Data(bytes: buffer.bytes, count: transferred)
+            networkQueue.sync { didRead(data) }
         }
         close()
+    }
+
+    private func didRead(_ data: Data) {
+        var bytes = data
+        if !choseFormat {
+            undecided.append(bytes)
+            guard undecided.count >= 4 else { return }
+            choseFormat = true
+            if undecided.starts(with: AccessoryRecords.preface) {
+                format.withLock { $0 = true }
+                bytes = Data(undecided.dropFirst(4))
+            } else {
+                bytes = undecided
+            }
+            undecided.removeAll()
+        }
+        guard isReusable else {
+            accepted?.send(content: bytes, completion: .contentProcessed { _ in })
+            return
+        }
+        let records = decoder.append(bytes)
+        for record in records {
+            let token = Data(record.dropFirst().prefix(AccessoryRecords.epochSize))
+            switch record.first {
+            case AccessoryRecords.ready:
+                guard record.count == 1 + AccessoryRecords.epochSize, token != epoch else { continue }
+                let prior = acceptedEpoch
+                epoch = token
+                pending.removeAll()
+                if let conn = accepted, prior != nil {
+                    endLogicalSession(conn)
+                } else {
+                    acceptedEpoch = token
+                }
+            case AccessoryRecords.bytes:
+                guard token == epoch else { continue }
+                let payload = Data(record.dropFirst(1 + AccessoryRecords.epochSize))
+                if let conn = accepted, acceptedEpoch == token, conn.state == .ready {
+                    conn.send(content: payload, completion: .contentProcessed { _ in })
+                } else if pending.count + payload.count <= 128 * 1024 {
+                    pending.append(payload)
+                }
+            default: break
+            }
+        }
     }
 
     private var isClosed: Bool { closed.withLock { $0 } }

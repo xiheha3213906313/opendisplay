@@ -30,7 +30,7 @@ The Rust workspace builds natively per architecture; see `linux/README.md`.
   with the main `gstreamer`/`gst-plugins-base-libs` packages). Without
   `pkgconf`, build with `--no-default-features` and use `--sink none`.
 - Protocol-only loop, no display needed:
-  `od-receiver --listen 127.0.0.1:9100 --sink none` and
+  `od-receiver --listen 127.0.0.1:9100 --sink none --dev-raw-loopback` and
   `od-fake-sender --connect 127.0.0.1:9100 --clip linux/testdata/clip-320x180-30.h264 --fps 60`.
 - Hyprland >= 0.55 is Lua-configured: `hyprctl keyword` is rejected; use
   `hyprctl eval 'hl.monitor({...})'` and verify with `hyprctl monitors -j`.

@@ -87,7 +87,7 @@ jobs:
           bundler-cache: true
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: brew install xcodegen cmake
 
       - name: Generate project
         env:
@@ -156,7 +156,7 @@ jobs:
           bundler-cache: true
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: brew install xcodegen cmake
 
       - name: Generate project
         env:

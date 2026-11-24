@@ -27,14 +27,21 @@ depends=(
   'gcc-libs'
   'glibc'
 )
-makedepends=('cargo' 'pkgconf' 'clang')  # clang: bindgen for ffmpeg-sys-next
+makedepends=('cargo' 'pkgconf' 'cmake' 'clang')  # clang: bindgen for ffmpeg-sys-next
 makedepends_x86_64=('nasm')              # OpenH264's x86 assembly (fallback encoder)
 # No provides=(): it names packages, and nothing depends on one called
 # od-sender (the binary's name).
 options=('!lto')  # cargo profile handles LTO
 
-source=("${pkgname}-${pkgver}.tar.gz::https://github.com/peetzweg/opendisplay/archive/refs/tags/${_tag}.tar.gz")
-sha256sums=('ba824da2f534315b3ab2ca6ec936a231a020573e6cdfd8f6b8352afeb9eb977f')
+_boringssl=808b8f3b9d71a055f741d5f7338d206e98747950
+source=(
+  "${pkgname}-${pkgver}.tar.gz::https://github.com/peetzweg/opendisplay/archive/refs/tags/${_tag}.tar.gz"
+  "boringssl-${_boringssl}.tar.gz::https://codeload.github.com/google/boringssl/tar.gz/${_boringssl}"
+)
+sha256sums=(
+  'ba824da2f534315b3ab2ca6ec936a231a020573e6cdfd8f6b8352afeb9eb977f'
+  "bcd3b4e60d87a20b510e60da05ff0b8fbfc6983d90554925ecad72f59f0c1369"
+)
 
 prepare() {
   cd "opendisplay-${pkgver}/linux"
@@ -46,6 +53,7 @@ build() {
   cd "opendisplay-${pkgver}/linux"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
+  export OD_BORINGSSL_SOURCE="${srcdir}/boringssl-${_boringssl}"
   export OD_SENDER_VERSION="${pkgver}"  # no .git in the tarball
   cargo build --frozen --release -p od-sender
 }
@@ -54,6 +62,7 @@ check() {
   cd "opendisplay-${pkgver}/linux"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
+  export OD_BORINGSSL_SOURCE="${srcdir}/boringssl-${_boringssl}"
   export OD_SENDER_VERSION="${pkgver}"  # no .git in the tarball
   # Unit tests only: nothing here needs a compositor or the network.
   cargo test --frozen --release -p od-sender
@@ -66,5 +75,8 @@ package() {
   install -Dm644 "${_pkg}/od-sender.desktop" "${pkgdir}/usr/share/applications/od-sender.desktop"
   install -Dm644 "${_pkg}/od-sender@.service" "${pkgdir}/usr/lib/systemd/user/od-sender@.service"
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  if [[ -f Pairing/licenses/BoringSSL.txt ]]; then
+    install -Dm644 Pairing/licenses/BoringSSL.txt "${pkgdir}/usr/share/licenses/${pkgname}/BoringSSL.txt"
+  fi
   install -Dm644 PROTOCOL.md "${pkgdir}/usr/share/doc/${pkgname}/PROTOCOL.md"
 }

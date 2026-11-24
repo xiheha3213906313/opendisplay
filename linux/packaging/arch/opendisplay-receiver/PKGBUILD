@@ -35,15 +35,22 @@ optdepends=(
   'gst-plugin-va: hardware H.264 decode via VA-API (Intel/AMD)'
   'gst-plugins-good: V4L2 stateful hardware decoders (v4l2h264dec)'
 )
-makedepends=('cargo' 'pkgconf')
+makedepends=('cargo' 'pkgconf' 'cmake')
 provides=('od-receiver')
 options=('!lto')  # cargo profile handles LTO
 
 # GitHub names the tarball's top directory opendisplay-${pkgver}: it drops the
 # tag's leading v.
 _tag="v${pkgver}"
-source=("${pkgname}-${pkgver}.tar.gz::https://github.com/peetzweg/opendisplay/archive/refs/tags/${_tag}.tar.gz")
-sha256sums=('ba824da2f534315b3ab2ca6ec936a231a020573e6cdfd8f6b8352afeb9eb977f')
+_boringssl=808b8f3b9d71a055f741d5f7338d206e98747950
+source=(
+  "${pkgname}-${pkgver}.tar.gz::https://github.com/peetzweg/opendisplay/archive/refs/tags/${_tag}.tar.gz"
+  "boringssl-${_boringssl}.tar.gz::https://codeload.github.com/google/boringssl/tar.gz/${_boringssl}"
+)
+sha256sums=(
+  'ba824da2f534315b3ab2ca6ec936a231a020573e6cdfd8f6b8352afeb9eb977f'
+  "bcd3b4e60d87a20b510e60da05ff0b8fbfc6983d90554925ecad72f59f0c1369"
+)
 
 prepare() {
   cd "opendisplay-${pkgver}/linux"
@@ -55,6 +62,7 @@ build() {
   cd "opendisplay-${pkgver}/linux"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
+  export OD_BORINGSSL_SOURCE="${srcdir}/boringssl-${_boringssl}"
   export OD_RECEIVER_VERSION="${pkgver}"  # no .git in the tarball
   cargo build --frozen --release -p od-receiver
 }
@@ -63,6 +71,7 @@ check() {
   cd "opendisplay-${pkgver}/linux"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
+  export OD_BORINGSSL_SOURCE="${srcdir}/boringssl-${_boringssl}"
   export OD_RECEIVER_VERSION="${pkgver}"
   # Loopback only: a fake sender into the receiver, decoding into fakesink.
   cargo test --frozen --release -p od-receiver
@@ -76,5 +85,8 @@ package() {
     "${pkgdir}/usr/share/applications/app.opendisplay.Receiver.desktop"
   install -Dm644 "${_pkg}/od-receiver.service" "${pkgdir}/usr/lib/systemd/user/od-receiver.service"
   install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  if [[ -f Pairing/licenses/BoringSSL.txt ]]; then
+    install -Dm644 Pairing/licenses/BoringSSL.txt "${pkgdir}/usr/share/licenses/${pkgname}/BoringSSL.txt"
+  fi
   install -Dm644 PROTOCOL.md "${pkgdir}/usr/share/doc/${pkgname}/PROTOCOL.md"
 }

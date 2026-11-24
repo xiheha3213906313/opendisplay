@@ -33,6 +33,9 @@ class SettingsDialog : DialogFragment() {
         val uiKind: String
         fun onNameChanged(name: String?)
         fun onOverlayChanged(enabled: Boolean)
+        val pairedComputers: Map<String, String>
+        fun forgetComputer(id: String)
+        fun disconnectDisplay()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -72,6 +75,7 @@ class SettingsDialog : DialogFragment() {
         private val ui = Handler(Looper.getMainLooper())
         private lateinit var connection: Preference
         private lateinit var stream: Preference
+        private lateinit var disconnect: Preference
         private val host get() = requireActivity() as Host
 
         private val refresh = object : Runnable {
@@ -81,6 +85,7 @@ class SettingsDialog : DialogFragment() {
                 val summary = host.streamSummary
                 stream.isVisible = summary != null
                 stream.summary = summary
+                disconnect.isVisible = host.isConnected
                 ui.postDelayed(this, 1000)
             }
         }
@@ -97,6 +102,20 @@ class SettingsDialog : DialogFragment() {
                 addPreference(info(R.string.row_listening, getString(R.string.row_listening_value)))
                 connection = info(R.string.row_connection, null).also { addPreference(it) }
                 stream = info(R.string.row_stream, null).also { addPreference(it) }
+                disconnect = Preference(ctx).apply {
+                    title = getString(R.string.disconnect_display)
+                    isVisible = host.isConnected
+                    setOnPreferenceClickListener { host.disconnectDisplay(); true }
+                }.also { addPreference(it) }
+            }
+
+            if (host.pairedComputers.isNotEmpty()) screen.category(R.string.paired_computers) {
+                host.pairedComputers.forEach { (id, name) ->
+                    addPreference(Preference(ctx).apply {
+                        title = getString(R.string.forget_computer, name)
+                        setOnPreferenceClickListener { host.forgetComputer(id); it.isVisible = false; true }
+                    })
+                }
             }
 
             screen.category(R.string.section_name) {

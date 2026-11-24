@@ -162,7 +162,7 @@ if [ -n "${OD_RECEIVER:-}" ]; then
   port=$((20000 + RANDOM % 10000))
   receiver_pid=
   start_receiver() {
-    "$OD_RECEIVER" --listen "127.0.0.1:$port" --sink none --no-mdns \
+    "$OD_RECEIVER" --listen "127.0.0.1:$port" --sink none --no-mdns --dev-raw-loopback \
       --width 1024 --height 768 --scale 2 --refresh 60 --stats-every 1 \
       >> "$logdir/receiver.log" 2>&1 &
     receiver_pid=$!
@@ -181,7 +181,7 @@ if [ -n "${OD_RECEIVER:-}" ]; then
   echo "--- run --backend wlroots -> od-receiver --sink none"
   start_receiver
   before="$(outputs)"
-  "$sender" run --to "127.0.0.1:$port" --backend wlroots --duration 6 > "$logdir/run.log" 2>&1 &
+  "$sender" run --dev-raw-loopback --to "127.0.0.1:$port" --backend wlroots --duration 6 > "$logdir/run.log" 2>&1 &
   run_pid=$!
   made="$(new_output "$before")"
   [ -n "$made" ] || { echo "the sender made no output"; cat "$logdir/run.log"; exit 1; }
@@ -202,7 +202,7 @@ if [ -n "${OD_RECEIVER:-}" ]; then
   echo "--- crash and clean"
   start_receiver
   before="$(outputs)"
-  "$sender" run --to "127.0.0.1:$port" --backend wlroots --duration 30 > "$logdir/crash.log" 2>&1 &
+  "$sender" run --dev-raw-loopback --to "127.0.0.1:$port" --backend wlroots --duration 30 > "$logdir/crash.log" 2>&1 &
   run_pid=$!
   made="$(new_output "$before")"
   [ -n "$made" ] || { echo "the sender made no output"; cat "$logdir/crash.log"; exit 1; }

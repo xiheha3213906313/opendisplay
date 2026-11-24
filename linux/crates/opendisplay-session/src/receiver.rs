@@ -98,6 +98,7 @@ pub enum ReceiverAction {
     StreamConfig(StreamConfig),
     /// The sender's health counters piggybacked on its `ping` (§6.2).
     SenderHealth(Ping),
+    SenderPaused,
     Close(CloseReason),
     /// Something worth a log line. Emitted at most once per distinct cause.
     Warn(String),
@@ -303,6 +304,7 @@ impl ReceiverSession {
             ControlMessage::CursorImg(i) => out.push(ReceiverAction::CursorImage(i)),
             ControlMessage::StreamConfig(s) => out.push(ReceiverAction::StreamConfig(s)),
             ControlMessage::Ping(p) => out.push(ReceiverAction::SenderHealth(p)),
+            ControlMessage::SessionDisconnect => out.push(ReceiverAction::SenderPaused),
             ControlMessage::Unknown { kind, .. } => {
                 self.counters.control_ignored += 1;
                 self.warn_once(format!("unknown control type `{kind}`"), out);

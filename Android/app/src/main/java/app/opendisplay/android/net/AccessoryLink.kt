@@ -20,14 +20,17 @@ internal class AccessoryLink private constructor(
     private val fd: ParcelFileDescriptor,
     accessory: UsbAccessory,
 ) : Link {
-    override val input: InputStream = PacketInputStream { b, off, len ->
+    private val rawInput: InputStream = PacketInputStream { b, off, len ->
         try {
             Os.read(fd.fileDescriptor, b, off, len)
         } catch (e: ErrnoException) {
             throw IOException("accessory read: ${e.message}", e)
         }
     }
-    override val output: OutputStream = FileOutputStream(fd.fileDescriptor)
+    private val rawOutput: OutputStream = FileOutputStream(fd.fileDescriptor)
+    private val records = if (accessory.version == "2") AccessoryRecords(rawInput, rawOutput) else null
+    override val input: InputStream = records?.input ?: rawInput
+    override val output: OutputStream = records?.output ?: rawOutput
     override val transport = "USB"
     override val remote = "USB accessory ${accessory.manufacturer} ${accessory.model}"
     override fun close() = fd.close()

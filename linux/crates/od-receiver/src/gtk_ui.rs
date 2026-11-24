@@ -337,6 +337,7 @@ pub fn run(
     opts: WindowOptions,
     sink: gst::Element,
     input: UnboundedSender<UserInput>,
+    controls: Option<crate::lan::Control>,
     on_close: impl Fn() + 'static,
 ) -> Result<()> {
     let paintable = sink.property::<gdk::Paintable>("paintable");
@@ -367,6 +368,9 @@ pub fn run(
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&picture));
         overlay.add_overlay(&fixed);
+        if let Some(controls) = controls.clone() {
+            attach_lan_controls(&overlay, controls);
+        }
 
         let window = gtk::ApplicationWindow::builder()
             .application(app)
@@ -434,4 +438,78 @@ pub fn run(
         return Err(anyhow!("GTK exited with {code:?}"));
     }
     Ok(())
+}
+
+fn attach_lan_controls(overlay: &gtk::Overlay, controls: crate::lan::Control) {
+    use crate::lan::Command;
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    card.set_halign(gtk::Align::Center);
+    card.set_valign(gtk::Align::Center);
+    card.set_margin_top(24);
+    card.add_css_class("background");
+    overlay.add_overlay(&card);
+    let disconnect = gtk::Button::with_label("Disconnect");
+    disconnect.set_halign(gtk::Align::End);
+    disconnect.set_valign(gtk::Align::Start);
+    disconnect.set_margin_top(8);
+    disconnect.set_margin_end(8);
+    disconnect.set_visible(false);
+    overlay.add_overlay(&disconnect);
+    let commands = controls.commands.clone();
+    disconnect.connect_clicked(move |_| {
+        let _ = commands.send(Command::Disconnect);
+    });
+    let mut snapshot: Option<(Vec<opendisplay_lan::Peer>, crate::lan::Status)> = None;
+    glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+        let state = (
+            controls.peers.borrow().clone(),
+            controls.status.borrow().clone(),
+        );
+        if snapshot.as_ref() == Some(&state) {
+            return glib::ControlFlow::Continue;
+        }
+        card.set_visible(!state.1.connected);
+        disconnect.set_visible(state.1.connected);
+        while let Some(child) = card.first_child() {
+            card.remove(&child);
+        }
+        if let Some((computer, code)) = &state.1.prompt {
+            card.append(&gtk::Label::new(Some(&format!(
+                "Enter this code on {computer}"
+            ))));
+            let digits = gtk::Label::new(Some(code));
+            digits.add_css_class("title-1");
+            card.append(&digits);
+        } else {
+            card.append(&gtk::Label::new(Some(if state.0.is_empty() {
+                "Open a current version of OpenDisplay on a computer on this network"
+            } else {
+                "Connect to a computer"
+            })));
+            for peer in &state.0 {
+                let button = gtk::Button::with_label(&peer.name);
+                let (peer, commands) = (peer.clone(), controls.commands.clone());
+                button.connect_clicked(move |_| {
+                    let _ = commands.send(Command::Connect(peer.clone()));
+                });
+                card.append(&button);
+            }
+            for &id in &state.1.pairs {
+                let label = state
+                    .0
+                    .iter()
+                    .find(|peer| peer.id == id)
+                    .map(|peer| peer.name.clone())
+                    .unwrap_or_else(|| id.to_string());
+                let forget = gtk::Button::with_label(&format!("Forget {label}"));
+                let commands = controls.commands.clone();
+                forget.connect_clicked(move |_| {
+                    let _ = commands.send(Command::Forget(id));
+                });
+                card.append(&forget);
+            }
+        }
+        snapshot = Some(state);
+        glib::ControlFlow::Continue
+    });
 }

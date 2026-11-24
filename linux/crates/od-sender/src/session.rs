@@ -10,11 +10,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use opendisplay_lan::{Endpoint, Intent, Role};
 use opendisplay_proto::control::{CursorImg, Hello, StreamConfig};
 use opendisplay_session::Now;
 use opendisplay_session::sender::{SenderAction, SenderConfig, SenderEvent, SenderSession};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 
@@ -569,11 +570,15 @@ fn shutdown_signal() -> Result<watch::Receiver<bool>> {
 pub enum SessionEnd {
     /// Another sender drives this receiver's output: stop, do not redial
     /// (each redial would take the receiver from the other sender).
-    LockConflict { held: LockHeld, receiver: String },
+    LockConflict {
+        held: LockHeld,
+        receiver: String,
+    },
     /// Connection dropped or shutdown; redial if allowed.
     Ended,
     /// The receiver said `closing`: do not redial.
     ReceiverClosed,
+    ReceiverPaused,
     /// The display kept vanishing or could not be recreated: stop.
     DisplayLost,
     /// No stream this sender can produce suits the receiver: stop.
@@ -681,7 +686,115 @@ fn conflict_or(e: anyhow::Error, receiver: String) -> Result<SessionEnd> {
     }
 }
 
-pub async fn run(addr: SocketAddr, backend: &mut dyn Backend, opts: RunOptions) -> Result<()> {
+pub async fn run(
+    addr: Option<SocketAddr>,
+    backend: &mut dyn Backend,
+    mut opts: RunOptions,
+) -> Result<()> {
+    let start = Instant::now();
+    let mut shutdown = shutdown_signal()?;
+    let name = opendisplay_lan::local_name();
+    let network = Endpoint::open(Role::Sender, None, name.clone())?;
+    let listener = TcpListener::bind(("0.0.0.0", 0)).await?;
+    let _advert = opendisplay_lan::advertise(
+        Role::Sender,
+        &name,
+        listener.local_addr()?.port(),
+        network.id(),
+    )?;
+    let code: opendisplay_lan::Prompt = std::sync::Arc::new(opendisplay_lan::terminal_code);
+    let mut losses = LossBudget::default();
+    let mut first = addr;
+    let mut current_peer = opts
+        .receiver_id
+        .as_deref()
+        .and_then(|id| uuid::Uuid::parse_str(id).ok());
+    let listening_only = addr.is_none();
+    loop {
+        if *shutdown.borrow() || opts.duration.is_some_and(|d| start.elapsed() >= d) {
+            break;
+        }
+        // This process owns one Linux display; accept only the designated
+        // receiver when run was invoked for a specific target.
+        let expected = current_peer;
+        let store = network.store.clone();
+        let inspect: opendisplay_lan::Inspect = std::sync::Arc::new(move |id, intent| {
+            expected.is_none_or(|expected| expected == id)
+                && (intent == Intent::Connect || store.resume_peer() == Some(id))
+        });
+        let link = if let Some(address) = first.take() {
+            tokio::select! {
+                result = network.connect(address, expected, Intent::Connect, inspect, code.clone()) => result?,
+                _ = shutdown.changed() => break,
+            }
+        } else {
+            let (tcp, _) = tokio::select! {
+                result = listener.accept() => result?,
+                _ = shutdown.changed() => break,
+            };
+            match tokio::select! {
+                result = network.accept(tcp, inspect, code.clone()) => result,
+                _ = shutdown.changed() => break,
+            } {
+                Ok(link) => link,
+                Err(e) => {
+                    warn!("Wi-Fi connection ended: {e}");
+                    continue;
+                }
+            }
+        };
+        current_peer = Some(link.id);
+        network.store.remember(link.id);
+        opts.receiver_id = Some(link.id.to_string());
+        opts.receiver_name = link.name;
+        backend.set_cursor_visible(opts.cursor != CursorMode::Off);
+        let end = session(
+            link.stream,
+            backend,
+            &opts,
+            start,
+            shutdown.clone(),
+            &mut losses,
+            None,
+        )
+        .await;
+        match end {
+            Ok(SessionEnd::LockConflict { held, receiver }) => {
+                anyhow::bail!("{held} for {receiver}; stop it first");
+            }
+            Ok(SessionEnd::ReceiverPaused) => {
+                network.store.pause();
+                if !listening_only {
+                    break;
+                }
+                current_peer = None;
+            }
+            Ok(SessionEnd::Incompatible | SessionEnd::DisplayLost) if !listening_only => break,
+            Ok(_) => {}
+            Err(error) => warn!("session error: {error:#}"),
+        }
+        if !opts.reconnect {
+            break;
+        }
+        if listening_only {
+            current_peer = None;
+        }
+    }
+    if *shutdown.borrow() {
+        network.store.pause();
+    }
+    Ok(())
+}
+
+pub async fn run_raw_loopback(
+    addr: SocketAddr,
+    backend: &mut dyn Backend,
+    opts: RunOptions,
+) -> Result<()> {
+    anyhow::ensure!(
+        addr.ip().is_loopback(),
+        "raw mode requires a loopback address"
+    );
     let start = Instant::now();
     info!(
         "backend {}: {} ({})",
@@ -727,7 +840,7 @@ pub async fn run(addr: SocketAddr, backend: &mut dyn Backend, opts: RunOptions) 
                     Ok(SessionEnd::LockConflict { held, receiver }) => {
                         anyhow::bail!("{held} for {receiver}; stop it first");
                     }
-                    Ok(SessionEnd::ReceiverClosed) => {
+                    Ok(SessionEnd::ReceiverClosed | SessionEnd::ReceiverPaused) => {
                         info!("receiver closed the session for good");
                         break;
                     }
@@ -924,7 +1037,12 @@ async fn session<S: AsyncRead + AsyncWrite + Unpin>(
     let result: Result<SessionEnd> = async {
         loop {
             let actions: Vec<SenderAction> = tokio::select! {
-                _ = shutdown.changed() => return Ok(SessionEnd::Ended),
+                _ = shutdown.changed() => {
+                    let message = opendisplay_proto::framing::encode_frame(
+                        &serde_json::to_vec(&opendisplay_proto::control::ControlMessage::SessionDisconnect)?);
+                    let _ = tokio::time::timeout(Duration::from_millis(500), stream.write_all(&message)).await;
+                    return Ok(SessionEnd::Ended);
+                },
                 r = stream.read(&mut buf) => {
                     let n = r.context("read")?;
                     if n == 0 { return Ok(SessionEnd::Ended); }
@@ -1087,6 +1205,11 @@ async fn session<S: AsyncRead + AsyncWrite + Unpin>(
                         }
                     }
                     SenderAction::Hello(h) => {
+                        if peer.is_none() && opts.receiver_id.as_ref().is_some_and(|expected| {
+                            h.id.as_deref().is_none_or(|actual| !expected.eq_ignore_ascii_case(actual))
+                        }) {
+                            return Ok(SessionEnd::Incompatible);
+                        }
                         info!(
                             "hello: {}x{} @{} scale {} device {:?} id {:?} pv {}",
                             h.pixels_wide, h.pixels_high, h.display_max_frame_rate.unwrap_or(60), h.scale, h.device, h.id, sess.receiver_pv()
@@ -1141,6 +1264,7 @@ async fn session<S: AsyncRead + AsyncWrite + Unpin>(
                     SenderAction::Stats(v) => info!("PHONE-STATS {v}"),
                     SenderAction::ReceiverSleeping => info!("receiver sleeping"),
                     SenderAction::ReceiverClosing => return Ok(SessionEnd::ReceiverClosed),
+                    SenderAction::ReceiverPaused => return Ok(SessionEnd::ReceiverPaused),
                     SenderAction::Close(reason) => {
                         warn!("closing: {reason:?}");
                         return Ok(SessionEnd::Ended);

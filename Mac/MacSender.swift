@@ -27,7 +27,8 @@ enum CaptureMode: String {
 /// How the sender reaches the receiver. Reconnects re-dial from scratch, so
 /// a USB device that was replugged (new usbmuxd DeviceID) is found again.
 enum SenderTransport {
-    case tcp(NWEndpoint)                   // WiFi (Bonjour) or -host/-port override
+    case tcp(NWEndpoint)                   // direct cable or local test override
+    case secure(NWConnection, receiverID: String)
     case usb(udid: String?, port: UInt16)  // native usbmuxd dial; nil = first device
     case accessory(serial: String)         // Android over USB in accessory mode (AOA)
 }
@@ -50,6 +51,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     // Fired when the receiver announces the app is quitting: deliberate,
     // so the controller ends the session without arming a reconnect.
     @MainActor var onPeerClosed: (() -> Void)?
+    @MainActor var onPeerRequestedDisconnect: (() -> Void)?
     // Fired once a TCP connection is live, with whether it runs over a
     // wired path (Thunderbolt Bridge / Ethernet) rather than WiFi — the UI
     // labels the row so the user can see the cable is actually in use.
@@ -75,7 +77,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private var encoder: VTCompressionSession?
     private var connection: NWConnection?
     private var virtualDisplay: VirtualDisplay?
-    private let queue = DispatchQueue(label: "sender.video")
+    private let queue: DispatchQueue
     private let startCode: [UInt8] = [0, 0, 0, 1]
 
     // Audio negotiation, capture and sends are ordered on the connection queue.
@@ -378,7 +380,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     init(transport: SenderTransport, name: String, mode: CaptureMode,
          quality: StreamQuality = .best, displaySerial: UInt32 = 0x0001,
-         identityOffset: UInt32 = 0, awaitingWake: Bool = false) {
+         identityOffset: UInt32 = 0, awaitingWake: Bool = false,
+         queue: DispatchQueue = DispatchQueue(label: "sender.video")) {
+        self.queue = queue
         self.transport = transport
         self.endpointName = name
         self.mode = mode
@@ -1711,6 +1715,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         guard !stopped else { return }
         switch transport {
         case .tcp(let endpoint): connectTCP(endpoint)
+        case .secure(let conn, _):
+            guard conn.state == .ready, !everConnected else { return }
+            connection = conn
+            becomeReady(conn)
         case .usb(let udid, let port):
             connectWired { (try await Usbmux.dial(udid: udid, port: port, queue: self.queue), nil) }
         case .accessory(let serial):
@@ -1720,6 +1728,13 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     /// Bookkeeping shared by both transports once a connection is live.
     private func becomeReady(_ conn: NWConnection) {
+        if case .tcp = transport,
+           conn.currentPath?.usesInterfaceType(.loopback) != true,
+           !DirectCable.carries(conn) {
+            conn.cancel()
+            reportGone("Legacy Wi-Fi requires an update on the receiver")
+            return
+        }
         resetAudioLink()
         Log.info("connection ready to \(endpointName)")
         connectionGeneration &+= 1
@@ -1787,7 +1802,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 Log.info("connection to \(endpointName) goes through a proxy on this Mac, "
                     + "which usually can't reach the device; bypass the local network in the proxy app")
             }
-            Task { @MainActor in self.onTransportPath?(wired) }
+            if case .secure = transport {
+                Task { @MainActor in self.onTransportPath?(false) }
+            } else {
+                Task { @MainActor in self.onTransportPath?(wired) }
+            }
         }
         // -forceUpgradeProbe YES: dev knob — loopback runs never look like
         // WiFi, so this is the only way to exercise probe+migrate on one Mac.
@@ -2022,6 +2041,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         // pre-dial was tried and only ever hung until its timeout, adding 2s
         // to every connect. becomeReady reports which path won.
         let params = NWParameters(tls: nil, tcp: options)
+        if case let .service(_, _, _, interface) = endpoint, let interface {
+            params.requiredInterface = interface
+        }
         // The receiver is on the local network, never behind a proxy. A
         // system proxy (Clash, Surge and the like set one) otherwise takes
         // the dial: it connects to the proxy on loopback, the proxy can't
@@ -2211,6 +2233,32 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             // self-rescheduling asyncAfter — the pattern banned in #76.)
             guard let self, generation == self.dialGeneration, !self.stopped else { return }
             self.connect()
+        }
+    }
+
+    func replaceLAN(_ conn: NWConnection, receiverID: String) {
+        queue.async {
+            guard !self.stopped, !self.connectionReady,
+                  case .secure(_, let expected) = self.transport, expected == receiverID else {
+                conn.cancel()
+                return
+            }
+            self.dialGeneration &+= 1
+            self.connection?.cancel()
+            self.transport = .secure(conn, receiverID: receiverID)
+            self.connection = conn
+            self.becomeReady(conn)
+        }
+    }
+
+    func notifyExplicitDisconnect(completion: @escaping @MainActor () -> Void) {
+        queue.async {
+            guard let conn = self.connection, self.connectionReady else {
+                Task { @MainActor in completion() }
+                return
+            }
+            conn.send(content: self.framed(Data(#"{"type":"sessionDisconnect"}"#.utf8)),
+                      completion: .contentProcessed { _ in Task { @MainActor in completion() } })
         }
     }
 
@@ -2517,7 +2565,13 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private func receiveControl(on conn: NWConnection) {
         conn.receive(minimumIncompleteLength: 4, maximumLength: 4) { [weak self] data, _, _, error in
             guard let self, error == nil, let data, data.count == 4 else {
-                if let self, self.connection === conn { self.resetAudioLink() }
+                if let self, self.connection === conn {
+                    self.resetAudioLink()
+                    if case .secure = self.transport {
+                        self.linkDied("secure socket closed")
+                        return
+                    }
+                }
                 if let error {
                     Log.info("control receive ended: \(error)")
                     // A receive error on the live connection is fatal to it.
@@ -2588,6 +2642,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         case "hello":
             if let info = try? JSONDecoder().decode(PhoneInfo.self, from: payload) {
+                if case .secure(_, let id) = transport, info.id?.lowercased() != id {
+                    connection?.cancel()
+                    reportGone("The authenticated receiver announced a different installation ID")
+                    return
+                }
                 let previous = lastHello
                 lastHello = info
                 helloSeenOnConnection = true
@@ -2595,7 +2654,9 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 // now that it has, decide again (see the comment on the func).
                 if let conn = connection { refreshDirectLinkClassification(for: conn) }
                 Task { @MainActor in self.onHello?(info) }
-                if let port = info.cursorPort {
+                if case .secure = transport {
+                    closeCursorChannel()
+                } else if let port = info.cursorPort {
                     openCursorChannel(port: port)
                 } else {
                     closeCursorChannel()
@@ -2707,6 +2768,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             // starts a wake-waiting replacement session.
             Log.info("receiver went to sleep — ending session, reconnect armed for wake")
             Task { @MainActor in self.onPeerSleeping?() }
+        case "sessionDisconnect":
+            Task { @MainActor in self.onPeerRequestedDisconnect?() }
         case WireMessage.closing:
             // The app on the device is quitting for real — end the session
             // without the silence grace and without waiting for a wake.

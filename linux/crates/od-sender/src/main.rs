@@ -136,12 +136,22 @@ enum Cmd {
         keep_output: bool,
         #[arg(long)]
         no_reconnect: bool,
+        /// Raw loopback only, for local compositor tests.
+        #[arg(long, hide = true)]
+        dev_raw_loopback: bool,
         /// Stop after this many seconds.
         #[arg(long)]
         duration: Option<f64>,
         #[command(flatten)]
         backend: BackendArgs,
     },
+    /// Wait for a receiver to initiate a paired Wi-Fi connection.
+    Serve {
+        #[command(flatten)]
+        backend: BackendArgs,
+    },
+    /// Remove the saved Wi-Fi pairing for this receiver installation ID.
+    Forget { receiver: uuid::Uuid },
     /// List receivers on the local network.
     List {
         /// How long to browse, in seconds.
@@ -298,6 +308,7 @@ fn real_main() -> Result<i32> {
             workspace,
             keep_output,
             no_reconnect,
+            dev_raw_loopback,
             duration,
             backend,
         } => {
@@ -320,39 +331,73 @@ fn real_main() -> Result<i32> {
             let ran = rt.block_on(async {
                 let receiver =
                     resolve_receiver(to, connect, name, wait, config.tailscale.unwrap_or(true))?;
-                session::run(
-                    receiver.addr,
-                    backend.as_mut(),
-                    session::RunOptions {
-                        bitrate_mbps: eff.bitrate_mbps.unwrap_or(20.0),
-                        desktop: desktop::DesktopOptions {
-                            scale: eff.scale.unwrap_or_default(),
-                            max_fps: max_fps.or(config.max_fps),
-                        },
-                        threads: dev::threads_or_all(threads),
-                        encoder: encoder.or(config.encoder).unwrap_or(encoder::Backend::Auto),
-                        cursor: if no_cursor {
-                            session::CursorMode::Off
-                        } else {
-                            cursor.or(config.cursor).unwrap_or_default()
-                        },
-                        position: eff.position.unwrap_or(Position::AutoRight),
-                        workspace: eff.workspace.clone(),
-                        keep_output,
-                        reconnect: !no_reconnect,
-                        duration: duration.map(Duration::from_secs_f64),
-                        receiver_id: receiver.id,
-                        receiver_name: receiver.name,
-                        cli,
-                        config,
+                let options = session::RunOptions {
+                    bitrate_mbps: eff.bitrate_mbps.unwrap_or(20.0),
+                    desktop: desktop::DesktopOptions {
+                        scale: eff.scale.unwrap_or_default(),
+                        max_fps: max_fps.or(config.max_fps),
                     },
-                )
-                .await
+                    threads: dev::threads_or_all(threads),
+                    encoder: encoder.or(config.encoder).unwrap_or(encoder::Backend::Auto),
+                    cursor: if no_cursor {
+                        session::CursorMode::Off
+                    } else {
+                        cursor.or(config.cursor).unwrap_or_default()
+                    },
+                    position: eff.position.unwrap_or(Position::AutoRight),
+                    workspace: eff.workspace.clone(),
+                    keep_output,
+                    reconnect: !no_reconnect,
+                    duration: duration.map(Duration::from_secs_f64),
+                    receiver_id: receiver.id,
+                    receiver_name: receiver.name,
+                    cli,
+                    config,
+                };
+                if dev_raw_loopback {
+                    session::run_raw_loopback(receiver.addr, backend.as_mut(), options).await
+                } else {
+                    session::run(Some(receiver.addr), backend.as_mut(), options).await
+                }
             });
             // A drift probe may still be waiting on compositor IPC; the
             // display is already gone, so do not wait long for it.
             rt.shutdown_timeout(Duration::from_millis(500));
             ran?;
+        }
+        Cmd::Serve { backend } => {
+            let config = load_config(args.config.as_deref())?;
+            let defaults = config.defaults.clone().over(&config::builtin());
+            let mut backend = detect::detect(&backend.request_with(config.capture))?;
+            let rt = tokio::runtime::Runtime::new()?;
+            let result = rt.block_on(session::run(
+                None,
+                backend.as_mut(),
+                session::RunOptions {
+                    bitrate_mbps: defaults.bitrate_mbps.unwrap_or(20.0),
+                    desktop: desktop::DesktopOptions {
+                        scale: defaults.scale.unwrap_or_default(),
+                        max_fps: config.max_fps,
+                    },
+                    threads: dev::threads_or_all(0),
+                    encoder: config.encoder.unwrap_or(encoder::Backend::Auto),
+                    cursor: config.cursor.unwrap_or_default(),
+                    position: defaults.position.unwrap_or(Position::AutoRight),
+                    workspace: defaults.workspace,
+                    keep_output: false,
+                    reconnect: true,
+                    duration: None,
+                    receiver_id: None,
+                    receiver_name: String::new(),
+                    cli: config::Layer::default(),
+                    config,
+                },
+            ));
+            rt.shutdown_timeout(Duration::from_millis(500));
+            result?;
+        }
+        Cmd::Forget { receiver } => {
+            opendisplay_lan::Store::open(opendisplay_lan::Role::Sender)?.forget(receiver);
         }
         Cmd::List { timeout, json } => {
             // `list` worked without a config file before; a broken one does

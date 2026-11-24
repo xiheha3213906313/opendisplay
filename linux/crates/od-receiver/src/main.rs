@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Parser;
 use od_receiver::video::{SinkKind, VideoConfig};
-use od_receiver::{Config, Receiver, discovery, id, outputs};
+use od_receiver::{Config, Receiver, id, lan, outputs};
 use opendisplay_proto::control::{Hello, Panel, VideoCap};
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -59,6 +59,12 @@ struct Args {
     /// Do not advertise via mDNS.
     #[arg(long)]
     no_mdns: bool,
+    /// Remove a saved sender pairing by installation ID and exit.
+    #[arg(long)]
+    forget_peer: Option<uuid::Uuid>,
+    /// Raw protocol development on a loopback address only.
+    #[arg(long, hide = true)]
+    dev_raw_loopback: bool,
     /// Do not bind UDP port+1 for the cursor side channel (§6.3).
     #[arg(long)]
     no_cursor_udp: bool,
@@ -192,39 +198,40 @@ async fn serve(
     install_id: &str,
     shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
-    let port = receiver.local_addr()?.port();
-    let host = std::fs::read_to_string("/etc/hostname")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-    let host = if host.is_empty() {
-        "opendisplay".to_string()
-    } else {
-        host
-    };
-    let advert = if a.no_mdns {
+    let name = a.name.clone().unwrap_or_else(opendisplay_lan::local_name);
+    let _advert = if a.no_mdns || a.dev_raw_loopback {
         None
     } else {
-        match discovery::Advertisement::start(
-            a.name.as_deref().unwrap_or(&host),
-            &host,
+        let port = receiver.local_addr()?.port();
+        Some(opendisplay_lan::advertise(
+            opendisplay_lan::Role::Receiver,
+            &name,
             port,
-            install_id,
-        ) {
-            Ok(ad) => Some(ad),
-            Err(e) => {
-                warn!(
-                    "mDNS advertisement failed ({e:#}); senders must dial {} manually",
-                    receiver.local_addr()?
-                );
-                None
-            }
-        }
+            uuid::Uuid::parse_str(install_id)?,
+        )?)
     };
-    let result = receiver.run(shutdown).await.context("receiver");
-    if let Some(ad) = advert {
-        ad.stop();
+    receiver.run(shutdown).await.context("receiver").map(|_| ())
+}
+
+fn secure_receiver(
+    a: &Args,
+    receiver: Receiver,
+    id: &str,
+    graphical: bool,
+) -> Result<(Receiver, Option<lan::Control>)> {
+    if a.dev_raw_loopback {
+        anyhow::ensure!(
+            receiver.local_addr()?.ip().is_loopback(),
+            "raw mode requires a loopback listen address"
+        );
+        return Ok((receiver, None));
     }
-    result.map(|_| ())
+    let (lan, control) = lan::LanReceiver::start(
+        uuid::Uuid::parse_str(id)?,
+        a.name.clone().unwrap_or_else(opendisplay_lan::local_name),
+        graphical,
+    )?;
+    Ok((receiver.with_lan(lan), Some(control)))
 }
 
 /// Sleep notifications for the receiver: from logind when built with it.
@@ -244,6 +251,10 @@ fn main() -> Result<()> {
         .with_target(false)
         .init();
     let a = Args::parse();
+    if let Some(peer) = a.forget_peer {
+        opendisplay_lan::Store::open(opendisplay_lan::Role::Receiver)?.forget(peer);
+        return Ok(());
+    }
     #[cfg(feature = "gtk")]
     if a.sink == SinkKind::Gtk {
         return gtk_main(a);
@@ -269,6 +280,7 @@ fn main() -> Result<()> {
         let receiver = Receiver::bind(config(&a, hello), video)
             .await?
             .with_power(power_events());
+        let (receiver, _control) = secure_receiver(&a, receiver, &install_id, false)?;
         let (tx, rx) = watch::channel(false);
         tokio::spawn(async move {
             let _ = tokio::signal::ctrl_c().await;
@@ -342,6 +354,8 @@ fn gtk_main(a: Args) -> Result<()> {
         .block_on(Receiver::bind(config(&a, hello), video))?
         .with_input(input_rx)
         .with_power(power_events());
+    let (receiver, controls) =
+        rt.block_on(async { secure_receiver(&a, receiver, &install_id, true) })?;
     let (tx, rx) = watch::channel(false);
     let tx = Arc::new(tx);
     let options = WindowOptions {
@@ -365,7 +379,7 @@ fn gtk_main(a: Args) -> Result<()> {
                 result
             })?
     };
-    gtk_ui::run(options, sink, input_tx, move || {
+    gtk_ui::run(options, sink, input_tx, controls, move || {
         let _ = tx.send(true);
     })?;
     worker

@@ -1,0 +1,41 @@
+cmake_minimum_required(VERSION 3.22)
+project(OpenDisplayPairing LANGUAGES C CXX ASM)
+
+if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif()
+include(FetchContent)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+FetchContent_Declare(
+    boringssl
+    URL https://codeload.github.com/google/boringssl/tar.gz/808b8f3b9d71a055f741d5f7338d206e98747950
+    URL_HASH SHA256=bcd3b4e60d87a20b510e60da05ff0b8fbfc6983d90554925ecad72f59f0c1369
+)
+FetchContent_MakeAvailable(boringssl)
+add_library(odpair STATIC ODPairing.c LANHandshake.c)
+target_include_directories(odpair PUBLIC include)
+target_link_libraries(odpair PRIVATE crypto)
+if(APPLE)
+    target_sources(odpair PRIVATE ApplePairing.c)
+    target_compile_options(odpair PRIVATE -fblocks)
+endif()
+if(ANDROID)
+    add_library(odpair_jni SHARED AndroidPairing.c)
+    target_link_libraries(odpair_jni PRIVATE odpair crypto)
+    target_link_options(odpair_jni PRIVATE "-Wl,--exclude-libs,ALL")
+endif()
+
+option(OD_BUILD_TESTS "Build LAN pairing protocol tests" OFF)
+if(OD_BUILD_TESTS)
+    enable_testing()
+    find_package(Threads REQUIRED)
+    add_executable(handshake-tests HandshakeTests.c)
+    target_link_libraries(handshake-tests PRIVATE odpair Threads::Threads)
+    if(APPLE)
+        target_link_libraries(handshake-tests PRIVATE "-framework Security")
+    endif()
+    # Keep the test assertions active in release builds as well.
+    target_compile_options(handshake-tests PRIVATE -UNDEBUG)
+    add_test(NAME handshake COMMAND handshake-tests)
+endif()
