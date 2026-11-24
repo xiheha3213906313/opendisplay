@@ -5,17 +5,17 @@
 
 ### Features
 
-* pair Wi-Fi peers and resume wired sessions ([a41eda3](https://github.com/xiheha3213906313/opendisplay/commit/a41eda335d45156316b82c382966c80985f50a09))
-* install audio driver and synchronize Android media volume ([cefad2c](https://github.com/xiheha3213906313/opendisplay/commit/cefad2cb72c47bcf716b4d9c1e50d17ccd83f849))
-* publish Android as a Mac sound output ([2934244](https://github.com/xiheha3213906313/opendisplay/commit/29342446008213a7491ab653f1a36e731442c7f8))
-* forward Mac system audio to Android ([079a61d](https://github.com/xiheha3213906313/opendisplay/commit/079a61d219443164c0c2a29bd572c6bd6b1b3ab7))
+* pair Wi-Fi peers with a six-digit code, restore a trusted Wi-Fi session on reopen, and resume an Android USB session without falling back to Wi-Fi ([a41eda3](https://github.com/xiheha3213906313/opendisplay/commit/a41eda335d45156316b82c382966c80985f50a09))
+* install the macOS audio driver and apply the Mac's volume and mute to the Android media stream when the receiver allows it ([cefad2c](https://github.com/xiheha3213906313/opendisplay/commit/cefad2cb72c47bcf716b4d9c1e50d17ccd83f849))
+* publish each audio-ready Android receiver as a Mac sound output ([2934244](https://github.com/xiheha3213906313/opendisplay/commit/29342446008213a7491ab653f1a36e731442c7f8))
+* forward 48 kHz stereo Mac system audio to a connected Android receiver ([079a61d](https://github.com/xiheha3213906313/opendisplay/commit/079a61d219443164c0c2a29bd572c6bd6b1b3ab7))
 
 
 ### Bug Fixes
 
-* improve Wi-Fi pairing code entry ([cf9da5c](https://github.com/xiheha3213906313/opendisplay/commit/cf9da5c1c61a4505a1a4ebe36d13ad8fc76186d4))
-* **mac:** restore the primary display after Android USB reconnect ([0fd0d92](https://github.com/xiheha3213906313/opendisplay/commit/0fd0d921f2bad2ba2d9f1e2f79b68d38485a3c07))
-* authorize Android audio routes with a HAL lease token ([1af08f8](https://github.com/xiheha3213906313/opendisplay/commit/1af08f8c9ef69308ea972886d935b4b27cd1cf0a))
+* improve Wi-Fi pairing code entry with a focused six-digit field and a mismatch or expiry message ([cf9da5c](https://github.com/xiheha3213906313/opendisplay/commit/cf9da5c1c61a4505a1a4ebe36d13ad8fc76186d4))
+* **mac:** restore the primary display, and a previously selected sound output, after an Android USB receiver returns within ten seconds ([0fd0d92](https://github.com/xiheha3213906313/opendisplay/commit/0fd0d921f2bad2ba2d9f1e2f79b68d38485a3c07))
+* authorize Android audio routes with a private HAL lease token ([1af08f8](https://github.com/xiheha3213906313/opendisplay/commit/1af08f8c9ef69308ea972886d935b4b27cd1cf0a))
 
 ## [1.30.3](https://github.com/peetzweg/opendisplay/compare/v1.30.2...v1.30.3) (2026-11-14)
 
