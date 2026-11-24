@@ -35,8 +35,15 @@ on:
       - "linux/crates/od-receiver/**"
       - "linux/crates/build-version.rs"
       - ".github/workflows/linux-release.yml"
-  # No inputs: a manual run is a smoke test and never touches a release.
+  # A manual run never publishes. Pass version to stamp vX.Y.Z binaries
+  # (it must match linux/Cargo.toml) and download the workflow artifacts.
+  # The GitHub release upload below runs only for workflow_call's tag.
   workflow_dispatch:
+    inputs:
+      version:
+        description: Stamp artifacts as this vX.Y.Z without publishing. Example v1.31.0.
+        required: false
+        type: string
 
 concurrency:
   group: linux-release-${{ inputs.tag || github.ref }}
@@ -70,8 +77,10 @@ jobs:
       run:
         working-directory: linux
     env:
-      # Empty on pull requests and manual runs.
-      TAG: ${{ inputs.tag }}
+      # Empty on pull requests. workflow_call passes the release tag;
+      # a manual run can pass version to stamp the same binaries without
+      # uploading them.
+      TAG: ${{ inputs.tag || inputs.version }}
       # Fixed path: build-static.sh bakes it into rustflags, and the cache
       # restores it here.
       FFMPEG_DIR: /home/runner/static-ffmpeg

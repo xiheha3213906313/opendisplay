@@ -35,7 +35,12 @@ modules:
   - name: od-receiver
     buildsystem: simple
     build-commands:
-      - cargo build --offline --locked --release --manifest-path linux/Cargo.toml -p od-receiver
+      # The printed version is the workspace version in this tree. A shallow
+      # checkout cannot see v1.30.3, and git describe would otherwise stamp
+      # a -dev suffix on the release binary.
+      - |
+        ver="$(sed -n 's/^version = "\(.*\)"/\1/p' linux/Cargo.toml | head -1)"
+        OD_RECEIVER_VERSION="$ver" cargo build --offline --locked --release --manifest-path linux/Cargo.toml -p od-receiver
       - install -Dm755 linux/target/release/od-receiver /app/bin/od-receiver
       - install -Dm644 Pairing/licenses/BoringSSL.txt /app/share/licenses/od-receiver/BoringSSL.txt
       - install -Dm644 linux/packaging/arch/opendisplay-receiver/app.opendisplay.Receiver.desktop
