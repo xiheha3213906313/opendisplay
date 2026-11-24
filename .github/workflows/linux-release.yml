@@ -109,6 +109,14 @@ jobs:
         run: |
           crate="$(cargo pkgid -p od-sender | sed 's/.*[#@]//')"
           if [ -z "$TAG" ]; then
+            # This release branch's workspace version is the version being
+            # published. Other pull requests stay dev snapshots, so a
+            # pre-release build is not mistaken for the tag.
+            if [ "${GITHUB_HEAD_REF:-}" = "cursor/release-1.31.0-2985" ]; then
+              echo "VERSION=$crate" >> "$GITHUB_ENV"
+              echo "OD_SENDER_VERSION=$crate" >> "$GITHUB_ENV"
+              exit 0
+            fi
             sha="$(git rev-parse --short=7 HEAD)"
             echo "VERSION=${crate}-dev.${sha}" >> "$GITHUB_ENV"
             echo "OD_SENDER_VERSION=${crate}-dev.${sha}" >> "$GITHUB_ENV"
