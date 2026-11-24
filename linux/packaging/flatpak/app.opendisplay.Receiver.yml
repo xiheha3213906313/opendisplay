@@ -56,7 +56,10 @@ modules:
           - build
           - node_modules
       - type: archive
+        # codeload saves this as the bare commit SHA, so flatpak-builder
+        # cannot guess the format from the filename.
         url: https://codeload.github.com/google/boringssl/tar.gz/808b8f3b9d71a055f741d5f7338d206e98747950
+        archive-type: tar-gzip
         sha256: bcd3b4e60d87a20b510e60da05ff0b8fbfc6983d90554925ecad72f59f0c1369
         dest: boringssl
       - cargo-sources.json
