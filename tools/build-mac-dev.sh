@@ -25,7 +25,7 @@ case "${1:-sender}" in
 esac
 app="$destination/$app_name.app"
 sdk="${OPEN_DISPLAY_MACOS_SDK:-/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk}"
-sparkle="$deps/Sparkle.framework"
+sparkle="$deps/sparkle-2.10.1/Sparkle.framework"
 cmake="$deps/cmake-3.31.8-macos-universal/CMake.app/Contents/bin/cmake"
 boringssl_revision=$(sed -n 's#.*codeload\.github\.com/google/boringssl/tar\.gz/\([a-f0-9]*\).*#\1#p' Pairing/CMakeLists.txt)
 boringssl="$deps/boringssl-$boringssl_revision"
@@ -71,9 +71,11 @@ ruby -ryaml -rjson -e '
       "CFBundleInfoDictionaryVersion" => "6.0",
       "CFBundlePackageType" => "APPL",
       "CFBundleIconFile" => "AppIcon",
-      "CFBundleShortVersionString" => settings.fetch("MARKETING_VERSION"),
-      "CFBundleVersion" => settings.fetch("CURRENT_PROJECT_VERSION"),
+      "CFBundleShortVersionString" => ENV.fetch("OPEN_DISPLAY_DEV_VERSION", settings.fetch("MARKETING_VERSION")),
+      "CFBundleVersion" => ENV.fetch("OPEN_DISPLAY_DEV_BUILD_NUMBER", settings.fetch("CURRENT_PROJECT_VERSION")),
       "LSMinimumSystemVersion" => target.fetch("deploymentTarget"),
+      "SUFeedURL" => ENV.fetch("OPEN_DISPLAY_DEV_UPDATE_FEED", ""),
+      "SUPublicEDKey" => ENV.fetch("OPEN_DISPLAY_DEV_UPDATE_PUBLIC_KEY", ""),
       "SUEnableAutomaticChecks" => false
     )
     puts JSON.generate(info)

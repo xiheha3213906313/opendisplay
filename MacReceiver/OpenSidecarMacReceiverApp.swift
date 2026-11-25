@@ -17,6 +17,7 @@ import Sparkle
 // and hands out File > New; the panel here is one fixed-size window built
 // like the sender's control window (NSHostingView in an NSWindow).
 @main
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static func main() {
         let app = NSApplication.shared
@@ -29,8 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         withExtendedLifetime(delegate) { app.run() }
     }
 
-    let updater = SPUStandardUpdaterController(
-        startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    private lazy var updater = ApplicationUpdates.makeController()
 
     private var panel: NSWindow?
 
@@ -95,10 +95,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                         keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: String(localized: "Check for Updates…"),
-                        action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
-                        keyEquivalent: "").target = updater
-        appMenu.addItem(.separator())
+        if let updater {
+            appMenu.addItem(withTitle: String(localized: "Check for Updates…"),
+                            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+                            keyEquivalent: "").target = updater
+            appMenu.addItem(.separator())
+        }
         appMenu.addItem(withTitle: String(localized: "Hide OpenDisplay Receiver"),
                         action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())

@@ -137,6 +137,8 @@ jobs:
       APP_BUILD_NUMBER: ${{ github.run_number }}
       SENDER_EXISTS: ${{ needs.release-please.outputs.mac_sender_exists }}
       RECEIVER_EXISTS: ${{ needs.release-please.outputs.mac_receiver_exists }}
+      SPARKLE_SENDER_PUBLIC_KEY: ${{ vars.SPARKLE_SENDER_PUBLIC_KEY }}
+      SPARKLE_RECEIVER_PUBLIC_KEY: ${{ vars.SPARKLE_RECEIVER_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -171,7 +173,11 @@ jobs:
           mkdir -p build/export
 
           build_and_upload() {
-            local scheme="$1" derived="$2" app_name="$3" asset="$4"
+            local scheme="$1" derived="$2" app_name="$3" asset="$4" public_key="$5" entitlements="$6"
+            if [[ ! "$public_key" =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
+              echo "::error::Configure the repository Sparkle public key for $scheme"
+              exit 1
+            fi
             xcodebuild build \
               -project OpenSidecar.xcodeproj \
               -scheme "$scheme" \
@@ -182,19 +188,48 @@ jobs:
               CODE_SIGNING_REQUIRED=NO \
               CODE_SIGN_IDENTITY="" \
               DEVELOPMENT_TEAM="" \
+              "OPEN_DISPLAY_SPARKLE_PUBLIC_KEY=$public_key" \
               "MARKETING_VERSION=${version}" \
               "CURRENT_PROJECT_VERSION=${APP_BUILD_NUMBER}"
             local app="$derived/Build/Products/Release/$app_name.app"
+            lipo "$app/Contents/MacOS/$app_name" -verify_arch arm64
+            lipo "$app/Contents/MacOS/$app_name" -verify_arch x86_64
+            codesign --force --sign - --entitlements "$entitlements" "$app"
+            codesign --verify --deep --strict "$app"
             bash .mac-release-tools/tools/dmg/build.sh "$app" "build/export/$asset"
             gh release upload "$TAG_NAME" "build/export/$asset"
           }
 
           if [[ "$SENDER_EXISTS" != true ]]; then
-            build_and_upload OpenSidecarMac build/sender OpenDisplay OpenDisplay.dmg
+            build_and_upload OpenSidecarMac build/sender OpenDisplay OpenDisplay.dmg \
+              "$SPARKLE_SENDER_PUBLIC_KEY" Mac/OpenSidecarMac.entitlements
           fi
           if [[ "$RECEIVER_EXISTS" != true ]]; then
-            build_and_upload OpenSidecarMacReceiver build/receiver "OpenDisplay Receiver" OpenDisplayReceiver.dmg
+            build_and_upload OpenSidecarMacReceiver build/receiver "OpenDisplay Receiver" OpenDisplayReceiver.dmg \
+              "$SPARKLE_RECEIVER_PUBLIC_KEY" MacReceiver/OpenSidecarMacReceiver.entitlements
           fi
+
+  publish-mac-updates:
+    needs: [release-please, build-mac]
+    if: >-
+      ${{ always() && !cancelled() &&
+          github.repository == 'xiheha3213906313/opendisplay' &&
+          needs.release-please.outputs.release_created == 'true' &&
+          (needs.build-mac.result == 'success' || needs.build-mac.result == 'skipped') }}
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+      - name: Publish verified appcasts from the stable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+          SPARKLE_SENDER_PUBLIC_KEY: ${{ vars.SPARKLE_SENDER_PUBLIC_KEY }}
+          SPARKLE_RECEIVER_PUBLIC_KEY: ${{ vars.SPARKLE_RECEIVER_PUBLIC_KEY }}
+          SPARKLE_SENDER_PRIVATE_KEY: ${{ secrets.SPARKLE_SENDER_PRIVATE_KEY }}
+          SPARKLE_RECEIVER_PRIVATE_KEY: ${{ secrets.SPARKLE_RECEIVER_PRIVATE_KEY }}
+        run: bash tools/sparkle/publish-appcasts.sh "$TAG_NAME"
 
   # Sign new APKs with the fork's existing signing helper.
   build-android:

@@ -29,6 +29,35 @@ To preview the Finder layout locally, install `dmgbuild==2.0.0` in a Python
 build/export/OpenDisplay.dmg` with that environment active. Use the receiver
 app and `OpenDisplayReceiver.dmg` to preview its disk image.
 
+### Configure Mac updates
+
+Use the Sparkle version pinned in `project.yml`. Download the CLI tools with
+`bash tools/sparkle/install-tools.sh build/dev-deps/sparkle-2.10.1`. Generate
+two independent keys with `bin/generate_keys --account opendisplay-sender`
+and `bin/generate_keys --account opendisplay-receiver`.
+
+| GitHub Actions variable (public key) | GitHub Actions secret (exported private key) |
+| --- | --- |
+| `SPARKLE_SENDER_PUBLIC_KEY` | `SPARKLE_SENDER_PRIVATE_KEY` |
+| `SPARKLE_RECEIVER_PUBLIC_KEY` | `SPARKLE_RECEIVER_PRIVATE_KEY` |
+
+Obtain the public key with `generate_keys --account NAME -p`. Export each
+private key with `generate_keys --account NAME -x PATH` to a private temporary
+location. Set its repository secret from that file and remove the temporary
+copy. Retain the original Keychain entries or securely back them up. Keep
+the same keys for subsequent releases.
+
+The release workflow verifies both GitHub DMGs before publishing their
+signed appcasts together on the `sparkle-feeds` branch. Once the first
+`sparkle-feeds` release is available, users of older releases install that DMG
+once to switch update channels.
+
+For local update tests, use separate test keys and set
+`OPEN_DISPLAY_DEV_UPDATE_FEED`, `OPEN_DISPLAY_DEV_UPDATE_PUBLIC_KEY`,
+`OPEN_DISPLAY_DEV_VERSION` and `OPEN_DISPLAY_DEV_BUILD_NUMBER` when calling
+`bash tools/build-mac-dev.sh` for the sender or
+`bash tools/build-mac-dev.sh receiver` for the receiver.
+
 To recover a partial release, run **Actions → Release → Run workflow** with
 the existing tag. The workflow keeps uploaded DMGs and APKs and fills in
 missing files. If only the APK checksum is missing, it hashes the uploaded APK.

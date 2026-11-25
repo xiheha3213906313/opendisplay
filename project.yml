@@ -9,9 +9,7 @@ options:
 packages:
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
-    # 2.x is the current major (latest 2.9.x) and the first Sparkle line to
-    # support SPM. `from:` allows compatible 2.x updates.
-    from: "2.6.0"
+    exactVersion: "2.10.1"
 schemes:
   OpenSidecarMac:
     build:
@@ -75,18 +73,13 @@ targets:
         NSAudioCaptureUsageDescription: OpenDisplay forwards your Mac’s sound to the selected display when the audio driver is not installed.
         NSBonjourServices: ["_opensidecar._tcp", "_od-sender._tcp", "_od-receiver._tcp"]
         LSApplicationCategoryType: public.app-category.utilities
-        # --- Sparkle auto-update (issue #52) ---
-        # The appcast feed is hosted on the landing-page site at the custom
-        # domain. The release workflow publishes appcast.xml so this URL
-        # resolves — see .github/workflows/release.yml.
-        SUFeedURL: https://opendisplay.app/appcast.xml
-        # Public EdDSA key from Sparkle's `generate_keys`. The matching private
-        # key lives only as the `SPARKLE_PRIVATE_KEY` GitHub Actions secret
-        # (used to sign the appcast in CI) and is never committed. Sparkle
-        # verifies update signatures against this public key before installing.
-        SUPublicEDKey: rYxlIePmwzi2bRo/qIsuY2TqTnQ34li2gQhJpGBiumw=
-        # Check for updates automatically in the background on a schedule.
+        SUFeedURL: $(OPEN_DISPLAY_SPARKLE_FEED_URL)
+        SUPublicEDKey: $(OPEN_DISPLAY_SPARKLE_PUBLIC_KEY)
         SUEnableAutomaticChecks: true
+        SUAllowsAutomaticUpdates: false
+        SUVerifyUpdateBeforeExtraction: true
+        SURequireSignedFeed: true
+        SUSignedFeedFailureExpirationInterval: 0
     settings:
       base:
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Pairing/include"
@@ -98,7 +91,11 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_ENTITLEMENTS: Mac/OpenSidecarMac.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        OPEN_DISPLAY_SPARKLE_FEED_URL: ""
+        OPEN_DISPLAY_SPARKLE_PUBLIC_KEY: ""
       configs:
+        Release:
+          OPEN_DISPLAY_SPARKLE_FEED_URL: https://raw.githubusercontent.com/xiheha3213906313/opendisplay/sparkle-feeds/appcast.xml
         # Local dev builds get their own identity: TCC keys permission
         # grants by bundle ID + code signature, so a Debug build sharing
         # the release bundle ID knocks out the release app's Screen
@@ -151,11 +148,13 @@ targets:
         NSBonjourServices: ["_opensidecar._tcp", "_od-sender._tcp", "_od-receiver._tcp"]
         NSAppleEventsUsageDescription: OpenDisplay Receiver shuts this Mac down when the connected Mac asks it to.
         LSApplicationCategoryType: public.app-category.utilities
-        # Own Sparkle feed (separate DMG, same signing key); published by
-        # release.yml next to the sender's appcast.
-        SUFeedURL: https://opendisplay.app/appcast-receiver.xml
-        SUPublicEDKey: rYxlIePmwzi2bRo/qIsuY2TqTnQ34li2gQhJpGBiumw=
+        SUFeedURL: $(OPEN_DISPLAY_SPARKLE_FEED_URL)
+        SUPublicEDKey: $(OPEN_DISPLAY_SPARKLE_PUBLIC_KEY)
         SUEnableAutomaticChecks: true
+        SUAllowsAutomaticUpdates: false
+        SUVerifyUpdateBeforeExtraction: true
+        SURequireSignedFeed: true
+        SUSignedFeedFailureExpirationInterval: 0
     settings:
       base:
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Pairing/include"
@@ -168,7 +167,11 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_ENTITLEMENTS: MacReceiver/OpenSidecarMacReceiver.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        OPEN_DISPLAY_SPARKLE_FEED_URL: ""
+        OPEN_DISPLAY_SPARKLE_PUBLIC_KEY: ""
       configs:
+        Release:
+          OPEN_DISPLAY_SPARKLE_FEED_URL: https://raw.githubusercontent.com/xiheha3213906313/opendisplay/sparkle-feeds/appcast-receiver.xml
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: com.xiheha.opensidecar.mac.receiver.debug
           PRODUCT_NAME: OpenDisplay Receiver Dev
