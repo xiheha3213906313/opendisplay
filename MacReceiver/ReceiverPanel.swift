@@ -60,8 +60,8 @@ private struct ReceiverStatusSection: View {
                     Text(receiver.connected ? "Connected" : "Waiting for a computer…")
                     // The port matters on a Mac (firewall prompts), so the
                     // idle caption names it instead of repeating the status.
-                    Text(receiver.connected || receiver.status != "Ready to connect"
-                         ? receiver.status : "Listening on port 9000")
+                    Text(receiver.connected || !receiver.isReadyToConnect
+                         ? receiver.status : String(localized: "Listening on port 9000"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -93,8 +93,8 @@ private struct ReceiverStatusSection: View {
     /// the Mac app has Sparkle, so there is no blocking gate like on iOS.
     private var peerMessage: String? {
         switch receiver.peerSignal {
-        case let .updateReceiver(message, _): return message
-        case let .updateMac(message): return message
+        case .updateReceiver: return String(localized: "Update OpenDisplay Receiver to continue.")
+        case .updateMac: return String(localized: "Update OpenDisplay on the sending Mac to continue.")
         case nil: return nil
         }
     }

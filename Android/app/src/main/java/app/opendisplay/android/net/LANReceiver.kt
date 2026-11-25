@@ -9,6 +9,8 @@ import android.os.Looper
 import android.util.Base64
 import androidx.annotation.Keep
 import app.opendisplay.android.Log
+import app.opendisplay.android.R
+import androidx.annotation.StringRes
 import org.conscrypt.Conscrypt
 import java.io.ByteArrayInputStream
 import java.io.DataInputStream
@@ -65,13 +67,14 @@ internal class LANReceiver(
     @Volatile private var generation = 0
     private var codeOwner: Candidate? = null
     private var lastResume = 0L
-    var status: String? = null
+    @get:StringRes
+    var status: Int? = null
         private set
 
     val peers: List<Peer> get() = choices.values.distinctBy { it.id }.sortedBy { it.name }
     val paired: Map<String, String>
         get() = prefs.all.keys.filter { it.startsWith("name.") }
-            .associate { it.removePrefix("name.") to (prefs.getString(it, null) ?: "Computer") }
+            .associate { it.removePrefix("name.") to (prefs.getString(it, null) ?: context.getString(R.string.device_computer)) }
 
     private val tls by lazy {
         val (certificate, privateKey) = LANPairing.identity() ?: throw IOException("TLS identity unavailable")
@@ -116,9 +119,9 @@ internal class LANReceiver(
                     } else socket.close()
                 }
             } catch (e: Exception) {
-                handler.post { if (generation == epoch) updateStatus("Secure Wi-Fi is unavailable") }
+                handler.post { if (generation == epoch) updateStatus(R.string.lan_secure_unavailable) }
             } catch (e: LinkageError) {
-                handler.post { if (generation == epoch) updateStatus("Secure Wi-Fi is unavailable") }
+                handler.post { if (generation == epoch) updateStatus(R.string.lan_secure_unavailable) }
             }
         }, "od-lan-listen").apply { isDaemon = true }.start()
     }
@@ -155,7 +158,7 @@ internal class LANReceiver(
         }
         val handle = object : NsdManager.RegistrationListener {
             override fun onRegistrationFailed(info: NsdServiceInfo, error: Int) {
-                handler.post { if (registration === this) updateStatus("Could not advertise this receiver") }
+                handler.post { if (registration === this) updateStatus(R.string.lan_advertise_failed) }
             }
             override fun onServiceRegistered(info: NsdServiceInfo) = Unit
             override fun onServiceUnregistered(info: NsdServiceInfo) = Unit
@@ -163,7 +166,7 @@ internal class LANReceiver(
         }
         registration = handle
         runCatching { nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, handle) }
-            .onFailure { updateStatus("Could not advertise this receiver") }
+            .onFailure { updateStatus(R.string.lan_advertise_failed) }
     }
 
     private fun browse() {
@@ -172,7 +175,7 @@ internal class LANReceiver(
             override fun onDiscoveryStopped(type: String) = Unit
             override fun onStopDiscoveryFailed(type: String, error: Int) = Unit
             override fun onStartDiscoveryFailed(type: String, error: Int) {
-                handler.post { if (discovery === this) updateStatus("Could not discover computers") }
+                handler.post { if (discovery === this) updateStatus(R.string.lan_discovery_failed) }
             }
             override fun onServiceFound(info: NsdServiceInfo) {
                 handler.post {
@@ -193,7 +196,7 @@ internal class LANReceiver(
         }
         discovery = handle
         runCatching { nsd.discoverServices("_od-sender._tcp", NsdManager.PROTOCOL_DNS_SD, handle) }
-            .onFailure { updateStatus("Could not discover computers") }
+            .onFailure { updateStatus(R.string.lan_discovery_failed) }
     }
 
     @Suppress("DEPRECATION")
@@ -243,7 +246,7 @@ internal class LANReceiver(
         }
         val candidate = Candidate(socket, peer, request, generation)
         candidates.add(candidate)
-        if (request == 1) updateStatus("Connecting over Wi-Fi…")
+        if (request == 1) updateStatus(R.string.lan_connecting)
         Thread(candidate::run, "od-lan-pairing").apply { isDaemon = true }.start()
     }
 
@@ -318,7 +321,7 @@ internal class LANReceiver(
         changed()
     }
 
-    private fun updateStatus(message: String?) {
+    private fun updateStatus(@StringRes message: Int?) {
         status = message
         changed()
     }
@@ -382,10 +385,10 @@ internal class LANReceiver(
                         hideCode()
                     }
                     if (adopted) updateStatus(null)
-                    else if (result == -2) { pause(); updateStatus("Pair again to resume Wi-Fi") }
-                    else if (result == -3) { pause(); updateStatus("Wi-Fi verification failed") }
+                    else if (result == -2) { pause(); updateStatus(R.string.lan_pair_again) }
+                    else if (result == -3) { pause(); updateStatus(R.string.lan_verification_failed) }
                     else if (request == 2) tryResume()
-                    else if (request == 1) updateStatus("Wi-Fi connection ended")
+                    else if (request == 1) updateStatus(R.string.lan_connection_ended)
                 }
             }
         }

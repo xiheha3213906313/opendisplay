@@ -40,9 +40,11 @@ object DeviceIdentity {
             .putString(KEY_NAME, name?.trim()?.takeIf { it.isNotEmpty() }).apply()
     }
 
+    fun isTablet(context: Context): Boolean = context.resources.configuration.smallestScreenWidthDp >= 600
+
     /** Free-form device kind for the sender's UI text. */
     fun deviceKind(context: Context): String =
-        if (context.resources.configuration.smallestScreenWidthDp >= 600) "Android tablet" else "Android phone"
+        if (isTablet(context)) "Android tablet" else "Android phone"
 
     fun ipv4Addresses(): List<String> = try {
         NetworkInterface.getNetworkInterfaces().toList()

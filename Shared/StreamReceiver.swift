@@ -66,7 +66,22 @@ enum PeerUpdateSignal: Equatable {
 
 final class StreamReceiver: ObservableObject {
 
-    @Published var status = "Starting…"
+    private enum ConnectionStatus {
+        case ready
+        case message(String)
+    }
+
+    @Published private var connectionStatus = ConnectionStatus.message(String(localized: "Starting…"))
+    var status: String {
+        switch connectionStatus {
+        case .ready: return String(localized: "Ready to connect")
+        case .message(let text): return text
+        }
+    }
+    var isReadyToConnect: Bool {
+        if case .ready = connectionStatus { return true }
+        return false
+    }
     @Published var fps = 0
     @Published var connected = false
     @Published var videoSize = CGSize.zero   // for touch coordinate mapping
@@ -471,7 +486,7 @@ final class StreamReceiver: ObservableObject {
             self.pendingConnections.forEach { $0.cancel() }
             self.pendingConnections.removeAll()
         }
-        closeSession(announcing: WireMessage.closing, status: "Stopped",
+        closeSession(announcing: WireMessage.closing, status: String(localized: "Stopped"),
                      completion: completion)
     }
 
@@ -519,7 +534,7 @@ final class StreamReceiver: ObservableObject {
     @MainActor func enterSleep(completion: (() -> Void)? = nil) {
         setLANActive(false)
         closeSession(announcing: WireMessage.sleeping,
-                     status: "Asleep — resumes on wake", completion: completion)
+                     status: String(localized: "Asleep — resumes on wake"), completion: completion)
     }
 
     /// The app is being terminated (user swiped it away). Same close, but
@@ -528,7 +543,7 @@ final class StreamReceiver: ObservableObject {
     @MainActor func shutDown(completion: (() -> Void)? = nil) {
         setLANActive(false)
         closeSession(announcing: WireMessage.closing,
-                     status: "Closed", completion: completion)
+                     status: String(localized: "Closed"), completion: completion)
     }
 
     private func closeSession(announcing type: String, status: String,
@@ -689,7 +704,7 @@ final class StreamReceiver: ObservableObject {
             params.serviceClass = .interactiveVideo
             listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
         } catch {
-            setStatus("Listener failed: \(error.localizedDescription)")
+            setStatus(String(localized: "Listener failed: \(error.localizedDescription)"))
             return
         }
         // Advertise on the local network so the Mac can discover us for WiFi
@@ -706,7 +721,7 @@ final class StreamReceiver: ObservableObject {
                     let loopback = conn.currentPath?.usesInterfaceType(.loopback) == true
                     guard direct || loopback else {
                         self.pendingConnections.removeAll { $0 === conn }
-                        self.setStatus("Update OpenDisplay on the computer to connect over Wi-Fi.")
+                        self.setStatus(String(localized: "Update OpenDisplay on the computer to connect over Wi-Fi."))
                         conn.cancel()
                         return
                     }
@@ -741,11 +756,11 @@ final class StreamReceiver: ObservableObject {
             switch state {
             case .ready:
                 self.listenerHealthy = true
-                self.setStatus("Ready to connect")
+                self.setReadyStatus()
             case .failed(let error):
                 Log.info("listener failed: \(error) — restarting in 1s")
                 self.listenerHealthy = false
-                self.setStatus("Listener failed — restarting…")
+                self.setStatus(String(localized: "Listener failed — restarting…"))
                 self.queue.asyncAfter(deadline: .now() + 1) { self.restartListener() }
             case .cancelled:
                 self.listenerHealthy = false
@@ -1344,7 +1359,7 @@ final class StreamReceiver: ObservableObject {
                     DispatchQueue.main.async {
                         self.videoSize = CGSize(width: Int(dims.width), height: Int(dims.height))
                     }
-                    setStatus("Receiving \(dims.width)×\(dims.height)")
+                    setStatus(String(localized: "Receiving \(dims.width)×\(dims.height)"))
                 } else {
                     Log.info("format description FAILED: \(status)")
                 }
@@ -1380,7 +1395,7 @@ final class StreamReceiver: ObservableObject {
             DispatchQueue.main.async {
                 self.videoSize = CGSize(width: Int(dims.width), height: Int(dims.height))
             }
-            setStatus("Receiving \(dims.width)×\(dims.height)")
+            setStatus(String(localized: "Receiving \(dims.width)×\(dims.height)"))
         }
     }
 
@@ -1648,7 +1663,12 @@ final class StreamReceiver: ObservableObject {
 
     private func setStatus(_ text: String) {
         Log.info("status: \(text)")
-        DispatchQueue.main.async { self.status = text }
+        DispatchQueue.main.async { self.connectionStatus = .message(text) }
+    }
+
+    private func setReadyStatus() {
+        Log.info("status: ready to connect")
+        DispatchQueue.main.async { self.connectionStatus = .ready }
     }
 
     private func setConnected(_ value: Bool) {
@@ -1659,9 +1679,9 @@ final class StreamReceiver: ObservableObject {
                 Task { @MainActor in self.scheduleLANResume() }
             }
         }
-        if !value { setStatus("Ready to connect") }
+        if !value { setReadyStatus() }
         else {
-            setStatus("Connected")
+            setStatus(String(localized: "Connected"))
             // Remember the first ever successful connection to a Mac so the
             // first-run onboarding hint never reappears (issue #49).
             if !UserDefaults.standard.bool(forKey: "hasConnectedBefore") {

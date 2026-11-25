@@ -1,0 +1,2 @@
+"NSAudioCaptureUsageDescription" = "未安装音频驱动时，OpenDisplay 会将 Mac 的声音传输到所选的接收端。";
+"NSLocalNetworkUsageDescription" = "OpenDisplay 需要在本地网络中查找并连接接收端。";

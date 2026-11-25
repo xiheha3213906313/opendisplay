@@ -55,4 +55,23 @@
     <string name="disconnect_display">Disconnect</string>
     <string name="paired_computers">Paired computers</string>
     <string name="forget_computer">Forget %1$s</string>
+    <string name="device_phone">phone</string>
+    <string name="device_tablet">tablet</string>
+    <string name="device_computer">Computer</string>
+    <string name="lan_secure_unavailable">Secure Wi-Fi is unavailable</string>
+    <string name="lan_advertise_failed">Could not advertise this receiver</string>
+    <string name="lan_discovery_failed">Could not discover computers</string>
+    <string name="lan_connecting">Connecting over Wi-Fi…</string>
+    <string name="lan_pair_again">Pair again to resume Wi-Fi</string>
+    <string name="lan_verification_failed">Wi-Fi verification failed</string>
+    <string name="lan_connection_ended">Wi-Fi connection ended</string>
+    <string name="decoder_unavailable">Could not start the video decoder</string>
+    <string name="stream_unknown">Unknown stream</string>
+    <string name="stream_format">%1$s %2$d×%3$d @ %4$d fps</string>
+    <string name="stats_transport">%1$s  %2$s</string>
+    <string name="stats_rate">%1$.0f fps  %2$.1f Mb/s</string>
+    <string name="stats_latency">End-to-end p50 %1$s  p95 %2$s ms</string>
+    <string name="stats_decode">Decode p50 %1$s ms  RTT %2$s ms</string>
+    <string name="stats_decoder">Decoder %1$s  drops %2$d</string>
+    <string name="stats_sender">Sender capture %1$d fps  encoder drops %2$d  network drops %3$d</string>
 </resources>

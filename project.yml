@@ -1,6 +1,7 @@
 name: OpenSidecar
 options:
   createIntermediateGroups: true
+  developmentLanguage: en
 # Swift Package Manager dependencies. Sparkle powers the macOS app's
 # out-of-store auto-update (issue #52); it's an embedded open-source
 # framework + CLI tooling, not a hosted service — the appcast feed and the
@@ -70,7 +71,7 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSUIElement: true
-        NSLocalNetworkUsageDescription: OpenDisplay connects to your iPad or iPhone over the local network in WiFi mode.
+        NSLocalNetworkUsageDescription: OpenDisplay finds and connects to receivers on your local network.
         NSAudioCaptureUsageDescription: OpenDisplay forwards your Mac’s sound to the selected display when the audio driver is not installed.
         NSBonjourServices: ["_opensidecar._tcp", "_od-sender._tcp", "_od-receiver._tcp"]
         LSApplicationCategoryType: public.app-category.utilities

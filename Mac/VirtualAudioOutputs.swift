@@ -163,7 +163,7 @@ final class VirtualAudioOutputs {
         queue.async {
             self.removedUSBOutputs[session] = nil
             guard let plugin = self.checkedDriver() else {
-                onFailure(self.driverProblem() ?? "The OpenDisplay audio driver is unavailable.")
+                onFailure(self.driverProblem() ?? String(localized: "The OpenDisplay audio driver is unavailable."))
                 return
             }
             self.audioParticipants.insert(session)
@@ -191,7 +191,7 @@ final class VirtualAudioOutputs {
                 updated.append(route)
             }
             guard self.writeRegistry(updated, on: plugin) else {
-                onFailure("Could not register the Android sound output. Reconnect or reinstall the OpenDisplay audio driver.")
+                onFailure(String(localized: "Could not register the Android sound output. Reconnect or reinstall the OpenDisplay audio driver."))
                 return
             }
             let first = self.routes.isEmpty
@@ -315,7 +315,7 @@ final class VirtualAudioOutputs {
         reconcileDefault(removing: failed.map(\.uid))
         objectIDs = [:]
         pcmTimer.schedule(deadline: .distantFuture)
-        failed.forEach { $0.onFailure("The OpenDisplay audio driver stopped responding. Reconnect to restore audio.") }
+        failed.forEach { $0.onFailure(String(localized: "The OpenDisplay audio driver stopped responding. Reconnect to restore audio.")) }
     }
 
     private func refreshDevices() {
@@ -487,9 +487,9 @@ final class VirtualAudioOutputs {
     }
 
     private func driverProblem() -> String? {
-        guard let plugin = driverObject() else { return "Install the OpenDisplay audio driver and restart to use Android sound." }
+        guard let plugin = driverObject() else { return String(localized: "Install the OpenDisplay audio driver and restart to use Android sound.") }
         guard (cfProperty(plugin, Self.versionProperty) as? NSNumber)?.intValue == Self.protocolVersion else {
-            return "Update the OpenDisplay audio driver and restart to use Android sound."
+            return String(localized: "Update the OpenDisplay audio driver and restart to use Android sound.")
         }
         return nil
     }

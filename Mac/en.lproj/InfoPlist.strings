@@ -1,0 +1,2 @@
+"NSAudioCaptureUsageDescription" = "OpenDisplay forwards your Mac’s sound to the selected display when the audio driver is not installed.";
+"NSLocalNetworkUsageDescription" = "OpenDisplay finds and connects to receivers on your local network.";

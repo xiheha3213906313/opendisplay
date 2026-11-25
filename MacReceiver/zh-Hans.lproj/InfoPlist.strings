@@ -1,0 +1,2 @@
+"NSAppleEventsUsageDescription" = "收到已连接 Mac 的请求时，OpenDisplay 接收端可以将这台 Mac 关机。";
+"NSLocalNetworkUsageDescription" = "OpenDisplay 接收端需要在本地网络中广播，以便另一台 Mac 发现并连接。";

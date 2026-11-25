@@ -202,7 +202,7 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
     }
 
     /** "phone" / "tablet" for UI text, like iOS's iPhone / iPad. */
-    private fun uiKind() = DeviceIdentity.deviceKind(this).removePrefix("Android ")
+    private fun uiKind() = getString(if (DeviceIdentity.isTablet(this)) R.string.device_tablet else R.string.device_phone)
 
     private fun showSettings() {
         if (supportFragmentManager.findFragmentByTag(SETTINGS) != null) return
@@ -417,7 +417,7 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
         when {
             message != null -> idleView.setStatus(message, connected = false)
             connected -> idleView.setStatus(getString(R.string.status_waiting_picture), connected = true)
-            else -> idleView.setStatus(lan.status ?: if (legacyWifiSeen) getString(R.string.update_wifi_sender)
+            else -> idleView.setStatus(lan.status?.let(::getString) ?: if (legacyWifiSeen) getString(R.string.update_wifi_sender)
                 else getString(R.string.status_ready), connected = false)
         }
     }
@@ -586,7 +586,7 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
         idleView.showComputers(if (connected) emptyList() else lan.peers.map { peer ->
             peer.name to { lan.connect(peer) }
         })
-        if (!connected) lan.status?.let { idleView.setStatus(it, false) }
+        if (!connected) lan.status?.let { idleView.setStatus(getString(it), false) }
     }
 
     private fun showPairingCode(name: String, digits: String, cancel: () -> Unit) {
@@ -666,7 +666,7 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
             Log.w(TAG, "sender selected a codec we did not offer: $codecToken")
             return
         }
-        streamInfo = "${codec.wire.uppercase()} ${width}x$height @$fps"
+        streamInfo = getString(R.string.stream_format, codec.wire.uppercase(), width, height, fps)
         decoder.setStream(codec, width, height)
     }
 
@@ -738,7 +738,7 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
 
     override fun onDecoderError(message: String) {
         Log.w(TAG, message)
-        main.post { idleView.setStatus(message, connected) }
+        main.post { idleView.setStatus(getString(R.string.decoder_unavailable), connected) }
     }
 
     // endregion
@@ -749,14 +749,15 @@ class MainActivity : AppCompatActivity(), ReceiverServer.Listener, VideoDecoder.
             if (statsText.visibility == View.VISIBLE) {
                 val health = senderHealth
                 statsText.text = buildString {
-                    append(streamInfo ?: "stream ?").append("  ").append(transport).append('\n')
-                    append("fps %.0f  %.1f Mb/s\n".format(java.util.Locale.US, s.fps, s.mbps))
-                    append("e2e p50 %s  p95 %s ms\n".format(java.util.Locale.US, fmt(s.e2e50), fmt(s.e2e95)))
-                    append("decode p50 %s ms  rtt %s ms\n".format(java.util.Locale.US, fmt(s.dec50), fmt(server.clock.lastRttMs)))
-                    append("decoder ${decoder.codecName ?: "-"}  drops ${decoder.droppedFrames}")
+                    appendLine(getString(R.string.stats_transport, streamInfo ?: getString(R.string.stream_unknown), transport))
+                    appendLine(getString(R.string.stats_rate, s.fps, s.mbps))
+                    appendLine(getString(R.string.stats_latency, fmt(s.e2e50), fmt(s.e2e95)))
+                    appendLine(getString(R.string.stats_decode, fmt(s.dec50), fmt(server.clock.lastRttMs)))
+                    append(getString(R.string.stats_decoder, decoder.codecName ?: "-", decoder.droppedFrames))
                     health?.let {
-                        append("\nsender cap ${it.optInt("capFps")} fps  enc drops ${it.optInt("encDrops")}" +
-                            "  net drops ${it.optInt("netDrops")}")
+                        append('\n')
+                        append(getString(R.string.stats_sender, it.optInt("capFps"),
+                            it.optInt("encDrops"), it.optInt("netDrops")))
                     }
                 }
             }

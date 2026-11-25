@@ -11,9 +11,9 @@ enum AppPresentation: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .menuBar: return "Menu bar"
-        case .dock: return "Dock"
-        case .background: return "Background only"
+        case .menuBar: return String(localized: "Menu bar")
+        case .dock: return String(localized: "Dock")
+        case .background: return String(localized: "Background only")
         }
     }
 }
@@ -131,7 +131,7 @@ final class DeviceSession: ObservableObject, Identifiable {
     let sender: MacSender
     let displayIdentityKey: String
 
-    @Published var status = "Starting…"
+    @Published var status = SenderStatus(message: String(localized: "Starting…"))
     @Published var audioStatus: String?
     @Published var framesSent = 0
     var audioOffer: UUID?
@@ -170,7 +170,7 @@ final class DeviceSession: ObservableObject, Identifiable {
     @Published var wired = false
     var directTarget: ConnectionTarget?
 
-    var transportLabel: String { onUSB ? "USB" : wired ? "Cable" : "WiFi" }
+    var transportLabel: String { onUSB ? "USB" : wired ? String(localized: "Cable") : "Wi‑Fi" }
 
     // The Display size control (extend only): the choice for this device
     // and what each choice gives on it, from the latest hello.
@@ -249,7 +249,7 @@ final class SenderController: ObservableObject {
     var running: Bool { !sessions.isEmpty }
 
     @Published private(set) var audioDriverStatus = AudioDriverStatus.checking
-    @Published private(set) var fallbackAudioDetail = "No receiver is ready for audio. Sound stays on this Mac."
+    @Published private(set) var fallbackAudioDetail = String(localized: "No receiver is ready for audio. Sound stays on this Mac.")
     private var audioDriverChecks: AnyCancellable?
     private let fallbackAudioCapture = FallbackAudioCapture()
     private var latestAudioOfferOrder: UInt64 = 0
@@ -678,7 +678,7 @@ final class SenderController: ObservableObject {
                   handoff.wasMain || display == main else { continue }
             session.waitingForUSBCable = true
             session.sender.stop()
-            session.status = "Waiting for the Android USB cable…"
+            session.status = SenderStatus(message: String(localized: "Waiting for the Android USB cable…"))
             session.audioStatus = nil
             reconcileAudioRouting()
             Log.info("AOA: withdrew offline virtual display \(display) after USB disconnect")
@@ -1028,7 +1028,7 @@ final class SenderController: ObservableObject {
             // asleep wait) — only a change is worth the UI churn and the log line.
             guard let session, !session.waitingForUSBCable, session.status != text else { return }
             session.status = text
-            Log.info("status[\(id)]: \(text)")
+            Log.info("status[\(id)]: \(text.message)")
         }
         sender.onAudioState = { [weak session] status in
             guard session?.waitingForUSBCable == false else { return }
@@ -1164,7 +1164,7 @@ final class SenderController: ObservableObject {
                 // stopped by the user while waiting — nothing to report
             } catch {
                 Log.info("sender failed to start: \(error)")
-                session.status = "Failed: \(error.localizedDescription)"
+                session.status = SenderStatus(message: String(localized: "Failed: \(error.localizedDescription)"), phase: .failed)
                 // Free the half-built pipeline: a leaked virtual display
                 // would keep holding this device's serial, and a parked
                 // live-looking session would swallow every future connect.
@@ -1266,8 +1266,8 @@ final class SenderController: ObservableObject {
             stopFallbackAudio()
             sessions.forEach { $0.sender.setAudioMode(.off) }
             setFallbackAudioDetail(fallbackAudioFailed
-                ? "Sound stays on this Mac. Check System Audio Recording access and reconnect."
-                : "Sound is playing on this Mac. Audio without the driver requires macOS 14.2 or later.")
+                ? String(localized: "Sound stays on this Mac. Check System Audio Recording access and reconnect.")
+                : String(localized: "Sound is playing on this Mac. Audio without the driver requires macOS 14.2 or later."))
             return
         }
 
@@ -1278,9 +1278,9 @@ final class SenderController: ObservableObject {
         if fallbackAudioRoute == nil, let offer,
            let session = candidates.first(where: { $0.audioOffer == offer }), !fallbackAudioStopping {
             fallbackAudioRoute = FallbackAudioRoute(session: session, offer: offer)
-            setFallbackAudioDetail("Connecting audio to \(session.name)…")
+            setFallbackAudioDetail(String(localized: "Connecting audio to \(session.name)…"))
         } else if fallbackAudioRoute == nil {
-            setFallbackAudioDetail("No receiver is ready for audio. Sound stays on this Mac.")
+            setFallbackAudioDetail(String(localized: "No receiver is ready for audio. Sound stays on this Mac."))
         }
         for session in sessions {
             if let route = fallbackAudioRoute, route.session === session {
@@ -1304,7 +1304,7 @@ final class SenderController: ObservableObject {
                 guard let self, self.fallbackAudioRoute?.id == route else { return }
                 switch result {
                 case .success:
-                    self.setFallbackAudioDetail("Playing on \(target.session.name) without the driver.")
+                    self.setFallbackAudioDetail(String(localized: "Playing on \(target.session.name) without the driver."))
                 case .failure(let error):
                     Log.info("fallback audio: \(error.localizedDescription)")
                     self.fallbackAudioFailed = true
@@ -1354,11 +1354,11 @@ final class SenderController: ObservableObject {
         var requiresUpdate = false
 
         var transportLabel: String {
-            let wired = if case .wifi = usbTarget { "Cable" } else { "USB" }
+            let wired = if case .wifi = usbTarget { String(localized: "Cable") } else { "USB" }
             switch (usbTarget != nil, wifiTarget != nil) {
-            case (true, true): return "\(wired) · WiFi"
+            case (true, true): return "\(wired) · Wi‑Fi"
             case (true, false): return wired
-            case (false, true): return "WiFi"
+            case (false, true): return "Wi‑Fi"
             default: return ""
             }
         }
@@ -1560,7 +1560,9 @@ struct ContentView: View {
                                     .frame(width: 9, height: 9)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(entry.name)
-                                    Text(entry.requiresUpdate ? "Update OpenDisplay on this receiver to connect over Wi-Fi." : entry.transportLabel)
+                                    Text(entry.requiresUpdate
+                                         ? String(localized: "Update OpenDisplay on this receiver to connect over Wi-Fi.")
+                                         : entry.transportLabel)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -1653,9 +1655,7 @@ struct ContentView: View {
                 Circle()
                     .fill(controller.running ? .green : .secondary.opacity(0.5))
                     .frame(width: 9, height: 9)
-                Text(controller.running
-                     ? "\(controller.sessions.count) device\(controller.sessions.count == 1 ? "" : "s") connected"
-                     : "Idle")
+                connectionCount
                     .font(.callout)
                     .lineLimit(1)
                 Spacer()
@@ -1690,15 +1690,23 @@ struct ContentView: View {
         }
     }
 
+    private var connectionCount: Text {
+        switch controller.sessions.count {
+        case 0: return Text("Idle")
+        case 1: return Text("1 device connected")
+        default: return Text("\(controller.sessions.count) devices connected")
+        }
+    }
+
     private var audioDriverRow: some View {
         let status = controller.audioDriverStatus
         let detail: String
         switch status {
-        case .checking: detail = "Checking driver…"
+        case .checking: detail = String(localized: "Checking driver…")
         case .missing: detail = controller.fallbackAudioDetail
-        case .restartRequired: detail = "Installed. Restart macOS to load the driver."
-        case .ready: detail = "Ready for Android sound."
-        case .updateAvailable: detail = "Update to use Android system volume controls."
+        case .restartRequired: detail = String(localized: "Installed. Restart macOS to load the driver.")
+        case .ready: detail = String(localized: "Ready for Android sound.")
+        case .updateAvailable: detail = String(localized: "Update to use Android system volume controls.")
         }
         return HStack(alignment: .firstTextBaseline) {
             Image(systemName: status == .ready ? "checkmark.circle.fill" : "info.circle")
@@ -1709,7 +1717,7 @@ struct ContentView: View {
             }
             Spacer()
             if status == .missing || status == .updateAvailable {
-                Button(status == .missing ? "Install…" : "Update…") {
+                Button(status == .missing ? LocalizedStringKey("Install…") : LocalizedStringKey("Update…")) {
                     permissions.installAudioDriver()
                 }
                 .controlSize(.small)
@@ -1749,14 +1757,11 @@ struct SessionRow: View {
     @State private var choosingDisplaySize = false
 
     private var statusColor: Color {
-        if session.status.hasPrefix("Extending") || session.status.hasPrefix("Mirroring")
-            || session.status.hasPrefix("Connected") {
-            return .green
+        switch session.status.phase {
+        case .waiting: return .orange
+        case .active: return .green
+        case .failed: return .red
         }
-        if session.status.hasPrefix("Failed") || session.status.contains("stopped") {
-            return .red
-        }
-        return .orange
     }
 
     var body: some View {
@@ -1766,7 +1771,7 @@ struct SessionRow: View {
                 .frame(width: 9, height: 9)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                Text("\(session.transportLabel) · \(session.status)")
+                Text(verbatim: "\(session.transportLabel) · \(session.status.message)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -1848,7 +1853,7 @@ struct DisplaySizePicker: View {
     private func caption(for outcome: DisplaySizeOutcome) -> String {
         let sameAsDefault = outcome.choice != .default
             && outcome.desktop == session.displaySizeOutcomes.first(where: { $0.choice == .default })?.desktop
-        return outcome.caption + (sameAsDefault ? " (same as Default)" : "")
+        return sameAsDefault ? String(localized: "\(outcome.caption) (same as Default)") : outcome.caption
     }
 }
 
