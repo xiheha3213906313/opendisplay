@@ -32,8 +32,8 @@ Reports are very welcome ([#299](https://github.com/peetzweg/opendisplay/issues/
 
 | | Setup |
 |---|---|
-| **Tested** | Arch / Omarchy, Hyprland 0.56, aarch64 (Asahi Linux on an M1 Pro), CPU encoding. Receivers: iPhone (App Store), Mac receiver app (Intel iMac) |
-| **Expected to work** | Arch / Omarchy on x86_64. Any distro with Hyprland 0.55+. iPad and Android ([Google Play](https://play.google.com/store/apps/details?id=com.peetzweg.opendisplay)) as receivers: Android streamed fine in a first session (Pixel 10a, 53 fps, 33 ms), but touch, scroll, rotation, lock and quit are not checked yet |
+| **Tested** | Arch / Omarchy, Hyprland 0.56, aarch64 (Asahi Linux on an M1 Pro), CPU encoding. Receivers: iPhone, Mac receiver app (Intel iMac) |
+| **Expected to work** | Arch / Omarchy on x86_64. Any distro with Hyprland 0.55+. iPad and Android as receivers: Android streamed fine in a first session (Pixel 10a, 53 fps, 33 ms), but touch, scroll, rotation, lock and quit are not checked yet |
 | **Experimental** | **Sway 1.10+**, **KDE Plasma 6.8+** (6.7 and older with the desktop entry in place, see [KDE Plasma](#kde-plasma)), **GNOME 50+** (older GNOME may work, untested). Verified on headless desktops only |
 | **Existing outputs only** | niri, COSMIC, river, labwc, Wayfire and similar: `od-sender run --output <name>` streams an output you created yourself, if the compositor offers the screen-capture and virtual-pointer protocols `od-sender doctor` lists |
 | **Not supported yet** | X11 sessions, Hyprland older than 0.55, Flatpak, SteamOS Gaming Mode, USB cable transport, HEVC, Apple Pencil pressure (mapped to a plain pointer), audio, mirror mode |
@@ -46,8 +46,8 @@ use and about 60 ms of latency, against ~20 ms for a phone.
 
 ## Install
 
-Two ways, both from the [latest OpenDisplay release](https://github.com/peetzweg/opendisplay/releases/latest). Linux ships in
-every release, with the same version number as the Mac and iOS apps.
+Two ways, both from this repository's [GitHub Releases](https://github.com/xiheha3213906313/opendisplay/releases/latest). Linux ships in
+every release, with the same version number as the Mac and signed Android packages.
 
 ### Prebuilt tarball (any distribution)
 
@@ -125,9 +125,11 @@ receiver displays first-time codes in its foreground terminal. Use
 `od-receiver --forget-peer <sender-id>` to remove a pairing from the terminal.
 
 Open the OpenDisplay app on the receiver, in the foreground and on the same
-Wi-Fi as your computer. Receivers: iPhone and iPad from the App Store,
-Android from [Google Play](https://play.google.com/store/apps/details?id=com.peetzweg.opendisplay), Mac: OpenDisplay Receiver from the
-[releases page](https://github.com/peetzweg/opendisplay/releases/latest).
+Wi-Fi as your computer. Build the iPhone and iPad receiver from source.
+Install the Android receiver from this repository's
+[GitHub Releases](https://github.com/xiheha3213906313/opendisplay/releases/latest)
+APK, `OpenDisplay-Android.apk`. Install the Mac OpenDisplay Receiver from the
+same [releases page](https://github.com/xiheha3213906313/opendisplay/releases/latest).
 Then:
 
 ```sh
@@ -408,8 +410,8 @@ makepkg -si                                   # update: git pull && makepkg -si
 systemctl --user enable --now od-receiver     # optional: start with your session
 ```
 
-**Any distribution:** the Flatpak bundle attached to the
-[latest release](https://github.com/peetzweg/opendisplay/releases/latest),
+**Any distribution:** the Flatpak bundle attached to this repository's
+[GitHub Releases](https://github.com/xiheha3213906313/opendisplay/releases/latest),
 for your machine (`uname -m`). Its GNOME runtime comes from Flathub:
 
 ```sh

@@ -300,8 +300,8 @@ on Apple silicon (Asahi)**; x86_64 is expected to work. **Sway 1.10+, KDE
 Plasma 6.8+ and GNOME 50+** are experimental. Video is CPU-encoded for now
 (VA-API planned), and the stream is not encrypted, so use a network you trust.
 
-Install it from the
-[latest release](https://github.com/xiheha3213906313/opendisplay/releases/latest) (when Linux artifacts are available):
+Install it from this repository's
+[GitHub Releases](https://github.com/xiheha3213906313/opendisplay/releases/latest):
 the x86_64/aarch64 tarball with its `install.sh` works on any distribution,
 and on Arch / Omarchy you can instead build the package from this repository
 with `makepkg -si`
@@ -390,9 +390,9 @@ your iPhone, iPad or Android device (receives and displays). To use a
 
 ### Releases
 
-Download available builds from this fork's [GitHub releases](https://github.com/xiheha3213906313/opendisplay/releases/latest). The macOS sender requires macOS 14 or later; the macOS receiver requires macOS 12 or later. The iPhone and iPad receiver requires iOS or iPadOS 15 or later.
+Download the Mac, Linux, and signed Android packages from this repository's [GitHub Releases](https://github.com/xiheha3213906313/opendisplay/releases/latest). The macOS sender requires macOS 14 or later; the macOS receiver requires macOS 12 or later. Because this fork uses a different application identifier, it installs separately from the upstream app.
 
-Android builds can be installed from this fork's release artifacts when available. Because this fork uses a different application identifier, it installs separately from the upstream app.
+Build the iPhone and iPad receiver from source ([Quick start (from source)](#quick-start-from-source)). It requires iOS or iPadOS 15 or later.
 
 ## Quick start (from source)
 
@@ -478,7 +478,7 @@ decoder was failing. Attach both if you can.
 
 ## Updates and releases
 
-See [RELEASING.md](RELEASING.md) for build and compatibility checks. This fork needs its own signing credentials and update feed before signed releases and automatic updates can be offered. The inherited Sparkle configuration points to the upstream project and must be replaced before publishing.
+See [RELEASING.md](RELEASING.md) for build and compatibility checks.
 
 ## Contributing
 
