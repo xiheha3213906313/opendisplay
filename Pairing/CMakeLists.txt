@@ -4,6 +4,11 @@ project(OpenDisplayPairing LANGUAGES C CXX ASM)
 if(POLICY CMP0135)
     cmake_policy(SET CMP0135 NEW)
 endif()
+# iOS sets CMAKE_MACOSX_BUNDLE, so BoringSSL's bssl tool is configured as an
+# app bundle. CMake 4 dropped CMP0006's old fallback and rejects
+# install(TARGETS bssl) without a BUNDLE DESTINATION, which fails the iOS
+# configure before anything is compiled. The app links libcrypto only.
+set(CMAKE_MACOSX_BUNDLE OFF)
 include(FetchContent)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)

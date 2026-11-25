@@ -35,7 +35,12 @@ modules:
   - name: od-receiver
     buildsystem: simple
     build-commands:
-      - cargo build --offline --locked --release --manifest-path linux/Cargo.toml -p od-receiver
+      # The printed version is the workspace version in this tree. A shallow
+      # checkout cannot see v1.30.3, and git describe would otherwise stamp
+      # a -dev suffix on the release binary.
+      - |
+        ver="$(sed -n 's/^version = "\(.*\)"/\1/p' linux/Cargo.toml | head -1)"
+        OD_RECEIVER_VERSION="$ver" cargo build --offline --locked --release --manifest-path linux/Cargo.toml -p od-receiver
       - install -Dm755 linux/target/release/od-receiver /app/bin/od-receiver
       - install -Dm644 Pairing/licenses/BoringSSL.txt /app/share/licenses/od-receiver/BoringSSL.txt
       - install -Dm644 linux/packaging/arch/opendisplay-receiver/app.opendisplay.Receiver.desktop
@@ -56,7 +61,10 @@ modules:
           - build
           - node_modules
       - type: archive
+        # codeload saves this as the bare commit SHA, so flatpak-builder
+        # cannot guess the format from the filename.
         url: https://codeload.github.com/google/boringssl/tar.gz/808b8f3b9d71a055f741d5f7338d206e98747950
+        archive-type: tar-gzip
         sha256: bcd3b4e60d87a20b510e60da05ff0b8fbfc6983d90554925ecad72f59f0c1369
         dest: boringssl
       - cargo-sources.json

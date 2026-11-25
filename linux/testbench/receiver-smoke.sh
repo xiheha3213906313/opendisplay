@@ -67,8 +67,10 @@ focused() { swaymsg -t get_tree -r | jq -r '.. | select(.focused? == true) | .ap
 
 echo "--- receiver on HEADLESS-1"
 port=$((20000 + RANDOM % 10000))
-RUST_LOG="${RX_LOG:-info}" "$receiver" --listen "127.0.0.1:$port" --no-mdns --output HEADLESS-1 \
-  --stats-every 1 > "$logdir/receiver.log" 2>&1 &
+# Loopback compositor checks use the raw protocol. The default path is the
+# Wi-Fi pairing handshake, which this headless run cannot complete.
+RUST_LOG="${RX_LOG:-info}" "$receiver" --listen "127.0.0.1:$port" --no-mdns --dev-raw-loopback \
+  --output HEADLESS-1 --stats-every 1 > "$logdir/receiver.log" 2>&1 &
 receiver_pid=$!
 pids+=("$receiver_pid")
 up=
@@ -92,7 +94,7 @@ echo "receiver window: $(rxwin)"
 
 echo "--- sender -> receiver"
 before="$(outputs)"
-RUST_LOG=info "$sender" run --to "127.0.0.1:$port" --backend wlroots --duration 12 \
+RUST_LOG=info "$sender" run --dev-raw-loopback --to "127.0.0.1:$port" --backend wlroots --duration 12 \
   > "$logdir/sender.log" 2>&1 &
 sender_pid=$!
 pids+=("$sender_pid")

@@ -4,8 +4,11 @@
 # builds od-sender and a null-sink od-receiver, then kde-smoke.sh as a user.
 set -euo pipefail
 
+# cmake is not in base-devel. od-sender's opendisplay-lan build.rs runs it
+# to compile the LAN pairing library; without the package the build dies
+# with "No such file or directory".
 pacman -Syu --noconfirm --needed \
-  base-devel git rust clang pkgconf nasm ffmpeg libpipewire \
+  base-devel git rust clang cmake pkgconf nasm ffmpeg libpipewire \
   kwin pipewire wireplumber dbus libcap
 # Arch ships kwin_wayland with a file capability (CAP_SYS_NICE) that
 # Docker's default set lacks, so executing it fails with "Operation not

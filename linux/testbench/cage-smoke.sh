@@ -35,7 +35,9 @@ trap cleanup EXIT
 
 port=$((20000 + RANDOM % 10000))
 echo "--- cage running od-receiver"
-RUST_LOG=info cage -d -- "$receiver" --listen "127.0.0.1:$port" --no-mdns --stats-every 1 \
+# The fake sender speaks the raw loopback protocol, not the Wi-Fi pairing handshake.
+RUST_LOG=info cage -d -- "$receiver" --listen "127.0.0.1:$port" --no-mdns --dev-raw-loopback \
+  --stats-every 1 \
   > "$logdir/cage.log" 2>&1 &
 cage_pid=$!
 up=

@@ -35,8 +35,15 @@ on:
       - "linux/crates/od-receiver/**"
       - "linux/crates/build-version.rs"
       - ".github/workflows/linux-release.yml"
-  # No inputs: a manual run is a smoke test and never touches a release.
+  # A manual run never publishes. Pass version to stamp vX.Y.Z binaries
+  # (it must match linux/Cargo.toml) and download the workflow artifacts.
+  # The GitHub release upload below runs only for workflow_call's tag.
   workflow_dispatch:
+    inputs:
+      version:
+        description: Stamp artifacts as this vX.Y.Z without publishing. Example v1.31.0.
+        required: false
+        type: string
 
 concurrency:
   group: linux-release-${{ inputs.tag || github.ref }}
@@ -70,8 +77,10 @@ jobs:
       run:
         working-directory: linux
     env:
-      # Empty on pull requests and manual runs.
-      TAG: ${{ inputs.tag }}
+      # Empty on pull requests. workflow_call passes the release tag;
+      # a manual run can pass version to stamp the same binaries without
+      # uploading them.
+      TAG: ${{ inputs.tag || inputs.version }}
       # Fixed path: build-static.sh bakes it into rustflags, and the cache
       # restores it here.
       FFMPEG_DIR: /home/runner/static-ffmpeg
@@ -89,7 +98,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libclang-dev nasm libpipewire-0.3-dev
+            cmake pkg-config libclang-dev nasm libpipewire-0.3-dev
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -100,6 +109,14 @@ jobs:
         run: |
           crate="$(cargo pkgid -p od-sender | sed 's/.*[#@]//')"
           if [ -z "$TAG" ]; then
+            # This release branch's workspace version is the version being
+            # published. Other pull requests stay dev snapshots, so a
+            # pre-release build is not mistaken for the tag.
+            if [ "${GITHUB_HEAD_REF:-}" = "cursor/release-1.31.0-2985" ]; then
+              echo "VERSION=$crate" >> "$GITHUB_ENV"
+              echo "OD_SENDER_VERSION=$crate" >> "$GITHUB_ENV"
+              exit 0
+            fi
             sha="$(git rev-parse --short=7 HEAD)"
             echo "VERSION=${crate}-dev.${sha}" >> "$GITHUB_ENV"
             echo "OD_SENDER_VERSION=${crate}-dev.${sha}" >> "$GITHUB_ENV"
@@ -214,6 +231,14 @@ jobs:
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
       options: --privileged
+      # The image ships the GNOME SDK in its system installation, and
+      # flatpak-builder updates it in place when Flathub has a newer commit.
+      # That rename fails inside the image's overlay layers with
+      # "Invalid cross-device link", and xvfb-run then exits 139. An anonymous
+      # volume, which Docker fills from the image, keeps the installation on
+      # the runner's own filesystem so the update can complete.
+      volumes:
+        - /var/lib/flatpak
     steps:
       # Pinned by SHA: its bundles are release attachments.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
