@@ -62,15 +62,6 @@ final class InputInjector {
         self.displayID = displayID
     }
 
-    static func ensureAccessibilityPermission() -> Bool {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-        let trusted = AXIsProcessTrustedWithOptions(options)
-        if !trusted {
-            Log.info("Accessibility permission missing — prompt requested")
-        }
-        return trusted
-    }
-
     /// x/y are normalized [0,1] in video space (origin top-left).
     func handleTouch(phase: String, x: Double, y: Double) {
         let bounds = CGDisplayBounds(displayID)   // global CG coords, y-down

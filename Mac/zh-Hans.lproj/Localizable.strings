@@ -4,7 +4,6 @@
 "%lld devices connected" = "已连接 %lld 台设备";
 "1 device connected" = "已连接 1 台设备";
 "Accessibility" = "辅助功能";
-"Allowed" = "已授权";
 "Allows OpenDisplay to send your Mac’s picture to the receiver." = "允许 OpenDisplay 将 Mac 画面传输到接收端。";
 "Allows touch and pen input from the receiver. You can stream without it." = "允许接收端的触控和触控笔输入。关闭时仍可传输画面。";
 "Android audio did not become ready. Reconnect to try again." = "Android 音频未就绪，请重新连接。";
@@ -26,6 +25,7 @@
 "Capture stopped: %@" = "屏幕捕获已停止：%@";
 "Check for Updates…" = "检查更新…";
 "Checking driver…" = "正在检查驱动…";
+"Close" = "关闭";
 "Connect" = "连接";
 "Connect over Wi-Fi" = "通过 Wi-Fi 连接";
 "Connect over cable" = "通过数据线连接";
@@ -33,6 +33,7 @@
 "Connecting audio to %@…" = "正在将音频连接到 %@…";
 "Connecting over Wi-Fi…" = "正在通过 Wi-Fi 连接…";
 "Connection lost — retrying for %llds…" = "连接已断开，将在 %lld 秒内重试…";
+"Could not open System Settings" = "无法打开系统设置";
 "Could not reach the device over Wi-Fi" = "无法通过 Wi-Fi 连接到设备";
 "Could not register the Android sound output. Reconnect or reinstall the OpenDisplay audio driver." = "无法注册 Android 声音输出。请重新连接或重新安装 OpenDisplay 音频驱动。";
 "Could not start secure Wi-Fi" = "无法启动安全 Wi-Fi 连接";
@@ -46,7 +47,7 @@
 "Display size" = "显示尺寸";
 "Display size of %@" = "%@ 的显示尺寸";
 "Dock" = "程序坞";
-"Done" = "完成";
+"Drag this icon into the list and turn it on, or add it with +." = "将此图标拖入列表并打开开关，或点击「+」添加。";
 "Enter the code shown on %@" = "输入 %@ 显示的配对码";
 "Enter this code on %@" = "在 %@ 上输入此配对码";
 "Extend" = "扩展";
@@ -82,9 +83,9 @@
 "No menu bar or Dock icon — streaming keeps running. Open the OpenDisplay app again (Spotlight/Finder) to show this window." = "应用在后台继续传输。可从聚焦或访达重新打开 OpenDisplay 以显示此窗口。";
 "No receiver is ready for audio. Sound stays on this Mac." = "暂无可播放音频的接收端。声音留在这台 Mac。";
 "OK" = "好";
+"Open Privacy & Security in System Settings, then choose the permission you want to grant." = "在系统设置中打开「隐私与安全性」，然后选择要授予的权限。";
 "Open Settings" = "打开设置";
 "Open an OpenDisplay build that includes the driver installer, then try again." = "请打开包含驱动安装包的 OpenDisplay 版本，然后重试。";
-"OpenDisplay Permissions" = "OpenDisplay 权限";
 "OpenDisplay Receiver" = "OpenDisplay 接收端";
 "OpenDisplay app icon" = "OpenDisplay 应用图标";
 "Opens System Settings → Displays, where you can position the extended displays relative to your Mac screen (Arrange…). Each device shows up as its own display, named after the device." = "打开「系统设置 → 显示器」以排列屏幕位置。每台接收端以其设备名称显示。";
@@ -101,7 +102,6 @@
 "Saved display state is blocking OpenDisplay. Log out and back in, or restart the Mac, then reconnect." = "保存的显示器状态阻止了 OpenDisplay。请退出并重新登录，或重新启动 Mac 后再连接。";
 "Screen Recording" = "屏幕录制";
 "Screen Recording permission needed — see Permissions below" = "需要屏幕录制权限，请在下方「权限」中开启";
-"Set up OpenDisplay" = "设置 OpenDisplay";
 "Show app in" = "应用显示在";
 "Shut Down" = "关机";
 "Shut down %@" = "关闭 %@ 的电源";
@@ -121,7 +121,6 @@
 "The pairing key could not be saved" = "无法保存配对密钥";
 "This Mac’s video encoder could not be started (VideoToolbox error %d)" = "无法启动这台 Mac 的视频编码器（VideoToolbox 错误 %d）";
 "This receiver did not provide a valid audio device identity." = "此接收端未提供有效的音频设备标识。";
-"Turn on OpenDisplay in System Settings. If it’s missing, drag this icon into the list or use the + button to select the app." = "在系统设置中开启 OpenDisplay。如果列表里没有它，可将此图标拖入列表，或点击「+」选择应用。";
 "USB connection failed: %@" = "USB 连接失败：%@";
 "Unlock the Android device to connect over USB…" = "请解锁 Android 设备以通过 USB 连接…";
 "Update OpenDisplay on this receiver to connect over Wi-Fi." = "请更新此接收端的 OpenDisplay，以通过 Wi-Fi 连接。";

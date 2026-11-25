@@ -50,10 +50,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainWindow.updater = updater
         let presentation = SenderController.shared.presentation
         NSApp.setActivationPolicy(presentation == .dock ? .regular : .accessory)
-        if presentation != .menuBar {
-            MainWindow.show()
+        let defaults = UserDefaults.standard
+        let showPermissions = !defaults.bool(forKey: "hasSeenPermissionGuide") && !PermissionMonitor.shared.screenRecording
+        defaults.set(true, forKey: "hasSeenPermissionGuide")
+        if showPermissions || presentation != .menuBar {
+            MainWindow.show(prioritizePermissions: showPermissions)
         }
-        PermissionGuide.shared.showOnFirstLaunch()
     }
 
     // Background/Dock modes: opening the app again (Spotlight, Finder, Dock
@@ -73,7 +75,7 @@ enum MainWindow {
     // app's single Sparkle updater.
     static var updater: SPUStandardUpdaterController?
 
-    static func show() {
+    static func show(prioritizePermissions: Bool = false) {
         if window == nil {
             let w = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 440, height: 540),
@@ -82,7 +84,8 @@ enum MainWindow {
             w.title = "OpenDisplay"
             w.contentView = NSHostingView(
                 rootView: ContentView(controller: SenderController.shared,
-                                      updater: updater))
+                                      updater: updater,
+                                      prioritizePermissions: prioritizePermissions))
             w.isReleasedWhenClosed = false
             w.center()
             window = w
@@ -1490,22 +1493,18 @@ final class PermissionMonitor: ObservableObject {
         case .accessibility: return accessibility
         }
     }
-
-    func request(_ permission: SenderPermission) {
-        switch permission {
-        case .screenRecording: CGRequestScreenCaptureAccess()
-        case .accessibility: _ = InputInjector.ensureAccessibilityPermission()
-        }
-        refresh()
-    }
 }
 
 struct ContentView: View {
     @ObservedObject var controller: SenderController
     @ObservedObject private var permissions = PermissionMonitor.shared
+    @State private var settingsUnavailable = false
     // Optional so the view still compiles/previews without an updater (e.g.
     // if Sparkle ever fails to start); the button just disables itself then.
     let updater: SPUStandardUpdaterController?
+    var prioritizePermissions = false
+
+    private var showPermissionsFirst: Bool { prioritizePermissions && !permissions.screenRecording }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1533,6 +1532,7 @@ struct ContentView: View {
 
             // Settings
             Form {
+                if showPermissionsFirst { permissionsSection }
                 Section("Devices") {
                     LANCodeForm(lan: controller.lan, forget: controller.forgetLAN)
                     if controller.deviceEntries.isEmpty {
@@ -1624,18 +1624,7 @@ struct ContentView: View {
                 }
                 .help("Opens System Settings → Displays, where you can position the extended displays relative to your Mac screen (Arrange…). Each device shows up as its own display, named after the device.")
 
-                Section("Permissions") {
-                    audioDriverRow
-                    ForEach(SenderPermission.allCases) { permission in
-                        permissionRow(permission)
-                    }
-                    if controller.localNetworkDenied || controller.lan.localNetworkDenied {
-                        LabeledContent("Local Network access is off.") {
-                            Button("Open Settings") { MacPrivacySettings.open("Privacy_LocalNetwork") }
-                                .controlSize(.small)
-                        }
-                    }
-                }
+                if !showPermissionsFirst { permissionsSection }
             }
             .formStyle(.grouped)
             // Scrollable + fixed panel height: MenuBarExtra windows mis-measure
@@ -1681,6 +1670,26 @@ struct ContentView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text("Open an OpenDisplay build that includes the driver installer, then try again.")
+        }
+        .alert("Could not open System Settings", isPresented: $settingsUnavailable) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Open Privacy & Security in System Settings, then choose the permission you want to grant.")
+        }
+    }
+
+    private var permissionsSection: some View {
+        Section("Permissions") {
+            ForEach(SenderPermission.allCases) { permission in
+                permissionRow(permission)
+            }
+            audioDriverRow
+            if controller.localNetworkDenied || controller.lan.localNetworkDenied {
+                LabeledContent("Local Network access is off.") {
+                    Button("Open Settings") { MacPrivacySettings.open("Privacy_LocalNetwork") }
+                        .controlSize(.small)
+                }
+            }
         }
     }
 
@@ -1730,11 +1739,18 @@ struct ContentView: View {
                     Text(permission.explanation)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if permission == .screenRecording {
+                        Text("If macOS asks, quit and reopen OpenDisplay after allowing access.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             Spacer()
             if !granted {
-                Button("Grant…") { PermissionGuide.shared.show(for: permission) }
+                Button("Grant…") {
+                    settingsUnavailable = !PermissionGuide.shared.openSettings(for: permission)
+                }
                 .controlSize(.small)
             }
         }

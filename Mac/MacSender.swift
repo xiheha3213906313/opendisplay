@@ -430,9 +430,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             scheduleWatchdog()
         }
 
-        // Screen Recording permission: poll until granted. No auto-prompt at
-        // launch — the permission panel's Grant button triggers the system
-        // dialog, so the request always has visible context.
+        // Screen Recording permission: wait for the user to allow access in
+        // System Settings.
         if !CGPreflightScreenCaptureAccess() {
             await status(String(localized: "Screen Recording permission needed — see Permissions below"))
             Log.info("Screen Recording permission missing — waiting for grant via the permission panel")
@@ -486,9 +485,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 await reconfigure(latest)
             }
 
-            // Touch back-channel (Milestone 3). Needs Accessibility trust;
-            // streaming works without it, so don't interrupt with a prompt —
-            // the permission panel's Grant button asks when the user is ready.
+            // Touch input needs Accessibility trust. The user can grant it
+            // in System Settings while the picture keeps streaming.
             if !AXIsProcessTrusted() {
                 await status(String(localized: "Extending — grant Accessibility for touch input"))
                 // Event posting is trust-checked per-post, so it starts working
