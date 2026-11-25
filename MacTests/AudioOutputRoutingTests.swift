@@ -1,6 +1,39 @@
 import XCTest
 
 final class AudioOutputRoutingTests: XCTestCase {
+    func testFallbackFavorsTheMainDisplayOverEarlierConnections() {
+        let first = UUID()
+        let main = UUID()
+        XCTAssertEqual(FallbackAudioRouting.preferredOffer(mainDisplay: 2, candidates: [
+            .init(offer: first, displayID: 1),
+            .init(offer: main, displayID: 2)
+        ]), main)
+    }
+
+    func testFallbackSkipsAnUnsupportedOrFailedMainDisplayThenUsesTheMac() {
+        let first = UUID()
+        let second = UUID()
+        let unavailableMain = FallbackAudioRouting.Candidate(offer: nil, displayID: 3)
+        let firstReceiver = FallbackAudioRouting.Candidate(offer: first, displayID: 1)
+        let secondReceiver = FallbackAudioRouting.Candidate(offer: second, displayID: 2)
+        XCTAssertEqual(FallbackAudioRouting.preferredOffer(mainDisplay: 3, candidates: [
+            unavailableMain, firstReceiver, secondReceiver
+        ]), first)
+        XCTAssertEqual(FallbackAudioRouting.preferredOffer(mainDisplay: 3, candidates: [
+            unavailableMain, secondReceiver
+        ]), second)
+        XCTAssertNil(FallbackAudioRouting.preferredOffer(mainDisplay: 3, candidates: [unavailableMain]))
+    }
+
+    func testFallbackReconsidersTheMainDisplayOnAReconnectedOffer() {
+        let other = UUID()
+        let restoredMain = UUID()
+        XCTAssertEqual(FallbackAudioRouting.preferredOffer(mainDisplay: 3, candidates: [
+            .init(offer: other, displayID: 2),
+            .init(offer: restoredMain, displayID: 3)
+        ]), restoredMain)
+    }
+
     func testFirstOutputWinsAndFailoverUsesTheEarliestRemainingOutput() {
         var routing = AudioOutputRouting()
         routing.observe("headphones", isAndroid: false)

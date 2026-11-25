@@ -291,6 +291,12 @@ default output and plays 48 kHz stereo. Each connected receiver appears by
 name under **System Settings → Sound → Output**, where you can switch between
 receivers, speakers, and headphones. See [audio driver installation and removal](MacAudioDriver/README.md).
 
+Without the driver, macOS 14.2 or later can forward sound to one Android receiver
+over Wi-Fi or USB. OpenDisplay tries the receiver set as the Mac's main display
+first, then the other audio-capable receivers in connection order. macOS asks
+for system audio recording permission the first time. If no receiver can play,
+sound stays on the Mac's current output.
+
 ## Linux sender (beta)
 
 The OpenDisplay Linux sender (`od-sender`) extends a Linux desktop onto any

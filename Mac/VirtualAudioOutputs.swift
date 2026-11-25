@@ -5,31 +5,35 @@ enum AudioDriverStatus: Equatable {
     case checking, missing, restartRequired, ready, updateAvailable
 }
 
-/// Transfers the latest packet without queuing one closure per audio block on
+/// Transfers the latest batch without queuing one closure per audio block on
 /// a sender whose network and video queue is busy.
 final class AudioOutputMailbox {
     private let lock = NSLock()
-    private var pending: (Data, DispatchTime)?
+    private var pending: ([Data], DispatchTime)?
     private let delivery: DispatchSourceUserDataAdd
 
     init(queue: DispatchQueue, receive: @escaping (Data) -> Void) {
         delivery = DispatchSource.makeUserDataAddSource(queue: queue)
         delivery.setEventHandler { [weak self] in
-            guard let self, let packet = self.take(),
-                  DispatchTime.now() < packet.1 else { return }
-            receive(packet.0)
+            guard let self, let batch = self.take(),
+                  DispatchTime.now() < batch.1 else { return }
+            batch.0.forEach(receive)
         }
         delivery.resume()
     }
 
     func offer(_ packet: Data) {
+        offer([packet])
+    }
+
+    func offer(_ packets: [Data], capturedAt: DispatchTime = .now()) {
         lock.lock()
-        pending = (packet, .now() + .milliseconds(80))
+        pending = (packets, capturedAt + .milliseconds(80))
         lock.unlock()
         delivery.add(data: 1)
     }
 
-    private func take() -> (Data, DispatchTime)? {
+    private func take() -> ([Data], DispatchTime)? {
         lock.lock()
         defer { lock.unlock() }
         let packet = pending

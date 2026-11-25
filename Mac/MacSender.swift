@@ -60,6 +60,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     // controller can deduplicate USB/WiFi sessions to the same device.
     @MainActor var onHello: ((PhoneInfo) -> Void)?
     @MainActor var onAudioState: ((String?) -> Void)?
+    @MainActor var onAudioOffer: ((UUID?) -> Void)?
+    @MainActor var onFallbackAudioReady: ((UUID, AudioOutputMailbox) -> Void)?
     @MainActor var onPreparingUSBDisplay: (() -> Void)?
     @MainActor var onCreatedUSBDisplay: ((CGDirectDisplayID) -> Void)?
     @MainActor var onUSBVideoReady: ((CGDirectDisplayID, String?, ContinuousClock.Instant) -> Void)?
@@ -86,13 +88,22 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private let startCode: [UInt8] = [0, 0, 0, 1]
 
     // Audio negotiation, capture and sends are ordered on the connection queue.
+    enum AudioMode: Equatable {
+        case off
+        case driver
+        case fallback(route: UUID, offer: UUID)
+    }
+
     let audioSession = UUID()
+    private var audioMode = AudioMode.off
     private var audioReceiver: UUID?
+    private var audioOffer: UUID?
     private var audioVolumeOffered = false
     private var audioDriverCheck: UUID?
     private var audioRequest: UUID?
     private var audioRegistered = false
     private var audioFailed = false
+    private var fallbackAudioReady = false
     private var audioStatus: String?
     private var audioDeadline = DispatchTime.distantFuture
     private var pendingAudioSends = 0
@@ -2714,6 +2725,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                     stopAudio(notifyPeer: true)
                     audioReceiver = receiver
                     audioFailed = false
+                    publishAudioOffer(receiver == nil ? nil : UUID())
                 }
                 if receiver != nil {
                     beginAudioIfReady()
@@ -2741,7 +2753,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         case "audioStatus":
             handleAudioStatus(obj)
         case "audioVolumeState":
-            if let request = audioRequest, let id = obj["id"] as? String, UUID(uuidString: id) == request,
+            if audioMode == .driver, let request = audioRequest,
+               let id = obj["id"] as? String, UUID(uuidString: id) == request,
                let state = AndroidVolumeState(obj) {
                 VirtualAudioOutputs.shared.receiveVolume(session: audioSession, request: request, state: state)
             }
@@ -3442,9 +3455,42 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         DispatchQueue.main.async { self.onAudioState?(status) }
     }
 
+    private func publishAudioOffer(_ offer: UUID?) {
+        guard offer != audioOffer else { return }
+        audioOffer = offer
+        DispatchQueue.main.async { self.onAudioOffer?(offer) }
+    }
+
+    func setAudioMode(_ mode: AudioMode) {
+        queue.async {
+            if case let .fallback(_, offer) = mode, offer != self.audioOffer { return }
+            guard self.audioMode != mode else { return }
+            self.stopAudio(notifyPeer: true)
+            self.audioMode = mode
+            // A newly available driver should get a fresh negotiation even
+            // if its previous instance failed on this same connection.
+            if mode == .driver { self.audioFailed = false }
+            self.publishAudioState(nil)
+            self.beginAudioIfReady()
+        }
+    }
+
     private func beginAudioIfReady() {
         guard !stopped, connectionReady, helloSeenOnConnection, audioReceiver != nil,
-              !audioFailed, audioDriverCheck == nil, audioRequest == nil else { return }
+              audioDriverCheck == nil, audioRequest == nil else { return }
+        switch audioMode {
+        case .off:
+            return
+        case let .fallback(_, offer):
+            guard audioOffer == offer else { return }
+            requestAudioStart(UUID(), volumeControl: false)
+        case .driver:
+            guard !audioFailed else { return }
+            startDriverAudioIfAvailable()
+        }
+    }
+
+    private func startDriverAudioIfAvailable() {
         let id = UUID()
         audioDriverCheck = id
         VirtualAudioOutputs.shared.checkDriver { [weak self] problem in
@@ -3457,16 +3503,18 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                     self.publishAudioState(problem)
                     return
                 }
-                self.audioRequest = id
-                self.audioDeadline = .now() + .seconds(5)
                 self.publishAudioState("Preparing Android sound output…")
-                var message: [String: Any] = [
-                    "type": "audioStart", "id": id.uuidString, "format": AudioWire.format
-                ]
-                if self.audioVolumeOffered { message["volumeControl"] = 1 }
-                self.sendAudioControl(message)
+                self.requestAudioStart(id, volumeControl: self.audioVolumeOffered)
             }
         }
+    }
+
+    private func requestAudioStart(_ id: UUID, volumeControl: Bool) {
+        audioRequest = id
+        audioDeadline = .now() + .seconds(5)
+        var message: [String: Any] = ["type": "audioStart", "id": id.uuidString, "format": AudioWire.format]
+        if volumeControl { message["volumeControl"] = 1 }
+        sendAudioControl(message)
     }
 
     private func handleAudioStatus(_ message: [String: Any]) {
@@ -3474,11 +3522,21 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
               let id = message["id"] as? String, UUID(uuidString: id) == request else { return }
         switch message["status"] as? String {
         case "ready":
-            guard !audioRegistered else { return }
-            audioRegistered = true
-            audioDeadline = .now() + .seconds(5)
+            guard !audioRegistered, !fallbackAudioReady else { return }
             let mailbox = AudioOutputMailbox(queue: queue) { [weak self] payload in
                 self?.sendAudio(payload, for: request)
+            }
+            switch audioMode {
+            case .off:
+                return
+            case let .fallback(route, _):
+                fallbackAudioReady = true
+                audioDeadline = .distantFuture
+                DispatchQueue.main.async { self.onFallbackAudioReady?(route, mailbox) }
+                return
+            case .driver:
+                audioRegistered = true
+                audioDeadline = .now() + .seconds(5)
             }
             VirtualAudioOutputs.shared.register(session: audioSession, deviceID: deviceID,
                 name: endpointName, mailbox: mailbox, request: request,
@@ -3536,7 +3594,12 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private func failAudio(_ status: String, transportLost: Bool = false) {
         Log.info("audio: \(status)")
-        audioFailed = true
+        if case .fallback = audioMode {
+            // This offer stays retired until a new link (or peer) supplies one.
+            publishAudioOffer(nil)
+        } else {
+            audioFailed = true
+        }
         stopAudio(notifyPeer: true, transportLost: transportLost)
         if !transportLost { VirtualAudioOutputs.shared.cancelUSBReturn(session: audioSession) }
         publishAudioState(status)
@@ -3544,6 +3607,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private func stopAudio(notifyPeer: Bool, transportLost: Bool = false) {
         audioDriverCheck = nil
+        fallbackAudioReady = false
         guard let id = audioRequest else { return }
         audioRequest = nil
         if audioRegistered {
@@ -3567,6 +3631,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         audioReceiver = nil
         audioVolumeOffered = false
         audioFailed = false
+        publishAudioOffer(nil)
         publishAudioState(nil)
     }
 

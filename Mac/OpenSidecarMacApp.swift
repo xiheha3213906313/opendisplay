@@ -133,6 +133,8 @@ final class DeviceSession: ObservableObject, Identifiable {
     @Published var status = "Starting…"
     @Published var audioStatus: String?
     @Published var framesSent = 0
+    var audioOffer: UUID?
+    var audioOfferOrder: UInt64 = 0
     // The sender's start() threw: the pipeline is freed, only this row's
     // error text remains. A failed session must never swallow a fresh
     // connect for its device the way a live one does.
@@ -245,6 +247,23 @@ final class SenderController: ObservableObject {
 
     var running: Bool { !sessions.isEmpty }
 
+    @Published private(set) var audioDriverStatus = AudioDriverStatus.checking
+    @Published private(set) var fallbackAudioDetail = "No receiver is ready for audio. Sound stays on this Mac."
+    private var audioDriverChecks: AnyCancellable?
+    private let fallbackAudioCapture = FallbackAudioCapture()
+    private var latestAudioOfferOrder: UInt64 = 0
+    private var fallbackAudioCaptureRequested = false
+    private var fallbackAudioStopping = false
+    private var fallbackAudioFailed = false
+
+    private struct FallbackAudioRoute {
+        let session: DeviceSession
+        let offer: UUID
+        let id = UUID()
+    }
+
+    private var fallbackAudioRoute: FallbackAudioRoute?
+
     let lan = LANService(role: .sender, id: LANService.senderInstallationID,
                          name: Host.current().localizedName ?? "Mac",
                          queue: DispatchQueue(label: "opendisplay.lan.sender"))
@@ -349,6 +368,9 @@ final class SenderController: ObservableObject {
             .sink { [weak self] _ in
                 self?.screenConfigurationChanged()
             }
+        audioDriverChecks = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
+            .sink { [weak self] _ in self?.refreshAudioDriverStatus() }
+        refreshAudioDriverStatus()
         lanSubscription = lan.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         lan.allow = { [weak self] id, request in
             guard let self else { return false }
@@ -608,6 +630,7 @@ final class SenderController: ObservableObject {
             holdMainDisplayForUSBReturn(handoff)
         }
         withdrawMissingPrimaryDisplays()
+        reconcileAudioRouting()
     }
 
     private func accessoryPresenceChanged(_ udid: String, event: AccessoryDeviceWatcher.Presence) {
@@ -656,6 +679,7 @@ final class SenderController: ObservableObject {
             session.sender.stop()
             session.status = "Waiting for the Android USB cable…"
             session.audioStatus = nil
+            reconcileAudioRouting()
             Log.info("AOA: withdrew offline virtual display \(display) after USB disconnect")
         }
     }
@@ -1009,6 +1033,19 @@ final class SenderController: ObservableObject {
             guard session?.waitingForUSBCable == false else { return }
             session?.audioStatus = status
         }
+        sender.onAudioOffer = { [weak self, weak session] offer in
+            guard let self, let session, self.sessions.contains(where: { $0 === session }) else { return }
+            session.audioOffer = offer
+            if offer != nil {
+                self.latestAudioOfferOrder &+= 1
+                session.audioOfferOrder = self.latestAudioOfferOrder
+                self.fallbackAudioFailed = false
+            }
+            self.reconcileAudioRouting()
+        }
+        sender.onFallbackAudioReady = { [weak self] route, mailbox in
+            self?.startFallbackAudio(route: route, mailbox: mailbox)
+        }
         sender.onPreparingUSBDisplay = { [weak self, weak session] in
             if let session { self?.prepareReturningUSBDisplay(for: session) }
         }
@@ -1117,9 +1154,11 @@ final class SenderController: ObservableObject {
             self.disconnect(session, notify: false)
         }
         sessions.append(session)
+        reconcileAudioRouting()
         Task {
             do {
                 try await sender.start()
+                self.reconcileAudioRouting()
             } catch is CancellationError {
                 // stopped by the user while waiting — nothing to report
             } catch {
@@ -1131,6 +1170,7 @@ final class SenderController: ObservableObject {
                 session.failed = true
                 self.cancelUSBHandoff(for: session)
                 sender.stop()
+                self.reconcileAudioRouting()
             }
         }
     }
@@ -1196,6 +1236,97 @@ final class SenderController: ObservableObject {
         if !preservingUSBHandoff { cancelUSBHandoff(for: session) }
         session.sender.stop()
         sessions.removeAll { $0 === session }
+        reconcileAudioRouting()
+    }
+
+    // MARK: - Audio output
+
+    func refreshAudioDriverStatus() {
+        VirtualAudioOutputs.shared.checkInstallStatus { [weak self] status in
+            guard let self, self.audioDriverStatus != status else { return }
+            self.audioDriverStatus = status
+            self.reconcileAudioRouting()
+        }
+    }
+
+    private func reconcileAudioRouting() {
+        let candidates = sessions.filter { !$0.failed && !$0.waitingForUSBCable && $0.audioOffer != nil }
+            .sorted { $0.audioOfferOrder < $1.audioOfferOrder }
+        if candidates.isEmpty { fallbackAudioFailed = false }
+        guard audioDriverStatus == .missing else {
+            stopFallbackAudio()
+            if !fallbackAudioStopping, audioDriverStatus != .checking {
+                sessions.forEach { $0.sender.setAudioMode(.driver) }
+            }
+            return
+        }
+
+        guard #available(macOS 14.2, *), !fallbackAudioFailed else {
+            stopFallbackAudio()
+            sessions.forEach { $0.sender.setAudioMode(.off) }
+            setFallbackAudioDetail(fallbackAudioFailed
+                ? "Sound stays on this Mac. Check System Audio Recording access and reconnect."
+                : "Sound is playing on this Mac. Audio without the driver requires macOS 14.2 or later.")
+            return
+        }
+
+        let offer = FallbackAudioRouting.preferredOffer(mainDisplay: CGMainDisplayID(), candidates: candidates.map {
+            FallbackAudioRouting.Candidate(offer: $0.audioOffer, displayID: $0.sender.virtualDisplayID)
+        })
+        if fallbackAudioRoute?.offer != offer { stopFallbackAudio() }
+        if fallbackAudioRoute == nil, let offer,
+           let session = candidates.first(where: { $0.audioOffer == offer }), !fallbackAudioStopping {
+            fallbackAudioRoute = FallbackAudioRoute(session: session, offer: offer)
+            setFallbackAudioDetail("Connecting audio to \(session.name)…")
+        } else if fallbackAudioRoute == nil {
+            setFallbackAudioDetail("No receiver is ready for audio. Sound stays on this Mac.")
+        }
+        for session in sessions {
+            if let route = fallbackAudioRoute, route.session === session {
+                session.sender.setAudioMode(.fallback(route: route.id, offer: route.offer))
+            } else {
+                session.sender.setAudioMode(.off)
+            }
+        }
+    }
+
+    private func setFallbackAudioDetail(_ detail: String) {
+        if fallbackAudioDetail != detail { fallbackAudioDetail = detail }
+    }
+
+    private func startFallbackAudio(route: UUID, mailbox: AudioOutputMailbox) {
+        guard #available(macOS 14.2, *), audioDriverStatus == .missing,
+              let target = fallbackAudioRoute, target.id == route else { return }
+        fallbackAudioCaptureRequested = true
+        fallbackAudioCapture.start(mailbox: mailbox) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self, self.fallbackAudioRoute?.id == route else { return }
+                switch result {
+                case .success:
+                    self.setFallbackAudioDetail("Playing on \(target.session.name) without the driver.")
+                case .failure(let error):
+                    Log.info("fallback audio: \(error.localizedDescription)")
+                    self.fallbackAudioFailed = true
+                    self.reconcileAudioRouting()
+                }
+            }
+        }
+    }
+
+    private func stopFallbackAudio() {
+        guard let route = fallbackAudioRoute else { return }
+        fallbackAudioRoute = nil
+        route.session.sender.setAudioMode(.off)
+        guard fallbackAudioCaptureRequested else { return }
+        fallbackAudioCaptureRequested = false
+        fallbackAudioStopping = true
+        fallbackAudioCapture.stop { [weak self] in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.fallbackAudioStopping = false
+                self.reconcileAudioRouting()
+            }
+        }
     }
 
     /// Mode/quality apply per-pipeline at construction — rebuild every session.
@@ -1333,7 +1464,6 @@ final class SenderController: ObservableObject {
 final class PermissionMonitor: ObservableObject {
     @Published var screenRecording = false
     @Published var accessibility = false
-    @Published var audioDriver = AudioDriverStatus.checking
     @Published var audioDriverAlert = false
     private var timer: Timer?
 
@@ -1347,9 +1477,6 @@ final class PermissionMonitor: ObservableObject {
     func refresh() {
         screenRecording = CGPreflightScreenCaptureAccess()
         accessibility = AXIsProcessTrusted()
-        VirtualAudioOutputs.shared.checkInstallStatus { [weak self] status in
-            self?.audioDriver = status
-        }
     }
 
     func installAudioDriver() {
@@ -1568,9 +1695,10 @@ struct ContentView: View {
         .frame(width: 440, height: 540)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             permissions.refresh()
+            controller.refreshAudioDriverStatus()
         }
         .onReceive(NotificationCenter.default.publisher(for: VirtualAudioOutputs.devicesChanged)) { _ in
-            permissions.refresh()
+            controller.refreshAudioDriverStatus()
         }
         .alert("Audio driver installer unavailable", isPresented: $permissions.audioDriverAlert) {
             Button("OK", role: .cancel) {}
@@ -1580,11 +1708,11 @@ struct ContentView: View {
     }
 
     private var audioDriverRow: some View {
-        let status = permissions.audioDriver
+        let status = controller.audioDriverStatus
         let detail: String
         switch status {
         case .checking: detail = "Checking driver…"
-        case .missing: detail = "Install to use Android as a sound output."
+        case .missing: detail = controller.fallbackAudioDetail
         case .restartRequired: detail = "Installed. Restart macOS to load the driver."
         case .ready: detail = "Ready for Android sound."
         case .updateAvailable: detail = "Update to use Android system volume controls."

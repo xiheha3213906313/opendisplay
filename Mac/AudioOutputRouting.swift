@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Tracks the user's choice separately from changes made by OpenDisplay.
@@ -58,5 +59,17 @@ struct USBOutputReturn {
 
     func mayRestore(_ uid: String, currentRevision: UInt64) -> Bool {
         selectedUID == uid && selectionRevision == currentRevision
+    }
+}
+
+enum FallbackAudioRouting {
+    struct Candidate {
+        let offer: UUID?
+        let displayID: CGDirectDisplayID?
+    }
+
+    static func preferredOffer(mainDisplay: CGDirectDisplayID, candidates: [Candidate]) -> UUID? {
+        candidates.first { $0.displayID == mainDisplay && $0.offer != nil }?.offer
+            ?? candidates.lazy.compactMap(\.offer).first
     }
 }
