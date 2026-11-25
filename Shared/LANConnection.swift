@@ -233,9 +233,17 @@ final class LANService: ObservableObject {
     }
 
     @Published private(set) var peers: [LANPeer] = []
-    @Published private(set) var status: String?
+    @Published private var connectionMessage: String?
+    var status: String? {
+        listenerFailed
+            ? String(localized: "Wi-Fi listener failed. Check local network permissions.")
+            : connectionMessage
+    }
     @Published private(set) var prompt: Prompt?
     @Published private(set) var paired: [String: String]
+    @Published private var listenerDenied = false
+    @Published private var browserDenied = false
+    var localNetworkDenied: Bool { listenerDenied || browserDenied }
     var allow: ((String, LANRequest) -> Bool)?
     var onConnected: ((Authenticated) -> Bool)?
     var onPeersChanged: (() -> Void)?
@@ -247,6 +255,8 @@ final class LANService: ObservableObject {
     private var name: String
     private var listener: NWListener?
     private var browser: NWBrowser?
+    @Published private var listenerFailed = false
+    private var browserFailed = false
     private let queue: DispatchQueue
     private struct Candidate {
         let connection: NWConnection
@@ -267,13 +277,18 @@ final class LANService: ObservableObject {
     }
 
     func start() {
-        guard listener == nil, browser == nil else { return }
+        if listener == nil { startListener() }
+        if browser == nil { startBrowser() }
+    }
+
+    private func startListener() {
         guard let parameters = LANTLS.parameters(server: true, queue: queue),
               let listener = try? NWListener(using: parameters) else {
-            status = "Could not start secure Wi-Fi"
+            connectionMessage = String(localized: "Could not start secure Wi-Fi")
             return
         }
         self.listener = listener
+        listenerFailed = false
         advertise()
         listener.newConnectionHandler = { [weak self, weak listener] connection in
             Task { @MainActor in
@@ -281,16 +296,41 @@ final class LANService: ObservableObject {
                 self.start(connection, request: .incoming, expected: nil)
             }
         }
-        listener.stateUpdateHandler = { [weak self] state in
-            if case .failed = state {
-                Task { @MainActor in
-                    self?.status = "Wi-Fi listener failed. Check local network permissions."
+        listener.stateUpdateHandler = { [weak self, weak listener] state in
+            Task { @MainActor in
+                guard let self, let listener, self.listener === listener else { return }
+                switch state {
+                case .ready:
+                    self.listenerDenied = false
+                case .waiting(let error):
+                    self.listenerDenied = Self.isPolicyDenied(error)
+                case .failed(let error):
+                    self.listenerDenied = Self.isPolicyDenied(error)
+                    self.listenerFailed = true
+                default: break
                 }
             }
         }
         listener.start(queue: queue)
+    }
+
+    private func startBrowser() {
         let browser = NWBrowser(for: .bonjourWithTXTRecord(type: role.peer.serviceType, domain: nil), using: .tcp)
         self.browser = browser
+        browserFailed = false
+        browser.stateUpdateHandler = { [weak self, weak browser] state in
+            Task { @MainActor in
+                guard let self, let browser, self.browser === browser else { return }
+                switch state {
+                case .ready: self.browserDenied = false
+                case .waiting(let error): self.browserDenied = Self.isPolicyDenied(error)
+                case .failed(let error):
+                    self.browserDenied = Self.isPolicyDenied(error)
+                    self.browserFailed = true
+                default: break
+                }
+            }
+        }
         browser.browseResultsChangedHandler = { [weak self, weak browser] results, _ in
             Task { @MainActor in
                 guard let self, let browser, self.browser === browser else { return }
@@ -304,11 +344,32 @@ final class LANService: ObservableObject {
         browser.start(queue: queue)
     }
 
+    private static func isPolicyDenied(_ error: NWError) -> Bool {
+        if case .dns(let code) = error { return code == DNSServiceErrorType(kDNSServiceErr_PolicyDenied) }
+        return false
+    }
+
+    func retryLocalNetworkDiscovery() {
+        if listenerDenied && listenerFailed {
+            listener?.cancel()
+            listener = nil
+            startListener()
+        }
+        if browserDenied && browserFailed {
+            browser?.cancel()
+            browser = nil
+            startBrowser()
+        }
+    }
+
     func stop() {
         listener?.cancel()
         listener = nil
         browser?.cancel()
         browser = nil
+        listenerDenied = false
+        browserDenied = false
+        listenerFailed = false
         for token in Array(candidates.keys) { cancel(token) }
         peers = []
     }
@@ -359,7 +420,7 @@ final class LANService: ObservableObject {
         guard listener != nil, candidates.count < 8 else { connection.cancel(); return }
         let token = UUID()
         candidates[token] = Candidate(connection: connection, outgoing: expected != nil, id: expected)
-        if request == .manual { status = "Connecting over Wi-Fi…" }
+        if request == .manual { connectionMessage = String(localized: "Connecting over Wi-Fi…") }
         connection.stateUpdateHandler = { [weak self] state in
             Task { @MainActor in
                 guard let self, self.candidates[token] != nil else { return }
@@ -369,7 +430,7 @@ final class LANService: ObservableObject {
                     Log.info("LAN TLS waiting: \(error)")
                 case .failed(let error):
                     Log.info("LAN TLS failed: \(error)")
-                    if request == .manual { self.status = "Could not reach the device over Wi-Fi" }
+                    if request == .manual { self.connectionMessage = String(localized: "Could not reach the device over Wi-Fi") }
                     self.cancel(token)
                 case .cancelled:
                     self.cancel(token)
@@ -381,7 +442,7 @@ final class LANService: ObservableObject {
         queue.asyncAfter(deadline: .now() + 5) { [weak self] in
             Task { @MainActor in
                 guard let self, let candidate = self.candidates[token], !candidate.pairing else { return }
-                if request == .manual { self.status = "Wi-Fi connection timed out" }
+                if request == .manual { self.connectionMessage = String(localized: "Wi-Fi connection timed out") }
                 self.cancel(token)
             }
         }
@@ -409,7 +470,7 @@ final class LANService: ObservableObject {
                     if let code { result.finish(code) }
                     else {
                         if self.candidates[token]?.codeAttempts ?? 0 > 0 {
-                            self.status = "The code did not match. Try again."
+                            self.connectionMessage = String(localized: "The code did not match. Try again.")
                         }
                         self.candidates[token]?.codeAttempts += 1
                         self.candidates[token]?.answer = result
@@ -426,7 +487,7 @@ final class LANService: ObservableObject {
         queue.asyncAfter(deadline: handshake.deadline) { [weak self] in
             Task { @MainActor in
                 guard let self, self.candidates[token] != nil else { return }
-                if self.prompt?.id == token { self.status = "The pairing code expired. Try connecting again." }
+                if self.prompt?.id == token { self.connectionMessage = String(localized: "The pairing code expired. Try connecting again.") }
                 self.cancel(token)
             }
         }
@@ -453,10 +514,10 @@ final class LANService: ObservableObject {
             candidate.connection.cancel()
             Log.info("LAN authentication ended with status \(status)")
             switch status {
-            case -2: self.status = "Pair again to resume Wi-Fi"
-            case -3: self.status = "Wi-Fi verification failed"
+            case -2: self.connectionMessage = String(localized: "Pair again to resume Wi-Fi")
+            case -3: self.connectionMessage = String(localized: "Wi-Fi verification failed")
             default:
-                if candidate.outgoing { self.status = "The Wi-Fi connection was closed before verification" }
+                if candidate.outgoing { self.connectionMessage = String(localized: "The Wi-Fi connection was closed before verification") }
             }
             return
         }
@@ -466,7 +527,7 @@ final class LANService: ObservableObject {
         if result.fresh != 0 {
             let key = withUnsafeBytes(of: result.secret) { Data($0) }
             guard LANPairingKeys.write(key, role, id) else {
-                self.status = "The pairing key could not be saved"
+                self.connectionMessage = String(localized: "The pairing key could not be saved")
                 candidate.connection.cancel()
                 return
             }
@@ -481,7 +542,7 @@ final class LANService: ObservableObject {
             paired[id] = name
             savePairNames()
         }
-        self.status = nil
+        self.connectionMessage = nil
     }
 
     private func cancel(_ token: UUID) {

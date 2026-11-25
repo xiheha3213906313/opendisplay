@@ -59,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if presentation != .menuBar {
             MainWindow.show()
         }
+        PermissionGuide.shared.showOnFirstLaunch()
     }
 
     // Background/Dock modes: opening the app again (Spotlight, Finder, Dock
@@ -1462,12 +1463,14 @@ final class SenderController: ObservableObject {
 /// exactly what's missing instead of failing silently.
 @MainActor
 final class PermissionMonitor: ObservableObject {
+    static let shared = PermissionMonitor()
+
     @Published var screenRecording = false
     @Published var accessibility = false
     @Published var audioDriverAlert = false
     private var timer: Timer?
 
-    init() {
+    private init() {
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in
             Task { @MainActor in self.refresh() }
@@ -1487,29 +1490,25 @@ final class PermissionMonitor: ObservableObject {
         }
     }
 
-    /// Fire the system permission dialog on demand. macOS only shows each
-    /// dialog once per reset — after that the call just (re)registers the
-    /// app in System Settings, so the row exists to toggle manually.
-    func requestScreenRecording() {
-        CGRequestScreenCaptureAccess()
-        refresh()
-    }
-
-    func requestAccessibility() {
-        _ = InputInjector.ensureAccessibilityPermission()
-        refresh()
-    }
-
-    static func openPrivacyPane(_ anchor: String) {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") {
-            NSWorkspace.shared.open(url)
+    func isGranted(_ permission: SenderPermission) -> Bool {
+        switch permission {
+        case .screenRecording: return screenRecording
+        case .accessibility: return accessibility
         }
+    }
+
+    func request(_ permission: SenderPermission) {
+        switch permission {
+        case .screenRecording: CGRequestScreenCaptureAccess()
+        case .accessibility: _ = InputInjector.ensureAccessibilityPermission()
+        }
+        refresh()
     }
 }
 
 struct ContentView: View {
     @ObservedObject var controller: SenderController
-    @StateObject private var permissions = PermissionMonitor()
+    @ObservedObject private var permissions = PermissionMonitor.shared
     // Optional so the view still compiles/previews without an updater (e.g.
     // if Sparkle ever fails to start); the button just disables itself then.
     let updater: SPUStandardUpdaterController?
@@ -1631,32 +1630,15 @@ struct ContentView: View {
 
                 Section("Permissions") {
                     audioDriverRow
-                    permissionRow(
-                        "Screen Recording",
-                        granted: permissions.screenRecording,
-                        help: "Required to capture the display.",
-                        anchor: "Privacy_ScreenCapture",
-                        request: { permissions.requestScreenRecording() }
-                    )
-                    permissionRow(
-                        "Accessibility",
-                        granted: permissions.accessibility,
-                        help: "Required for touch input from the device.",
-                        anchor: "Privacy_Accessibility",
-                        request: { permissions.requestAccessibility() }
-                    )
-                    // macOS offers no API to query Local Network access, so
-                    // infer from discovery: a blocked browse is a definite no,
-                    // an empty one may just mean no receiver is open.
-                    permissionRow(
-                        "Local Network",
-                        granted: !controller.discovered.isEmpty,
-                        uncertain: controller.discovered.isEmpty && !controller.localNetworkDenied,
-                        help: controller.localNetworkDenied
-                            ? "Off for OpenDisplay on this Mac, so WiFi mode finds no devices. Allow OpenDisplay under Privacy & Security → Local Network."
-                            : "Required for WiFi mode. If no device appears in the Devices list, allow OpenDisplay under Privacy & Security → Local Network on this Mac AND on the device — and keep the OpenDisplay app open there.",
-                        anchor: "Privacy_LocalNetwork"
-                    )
+                    ForEach(SenderPermission.allCases) { permission in
+                        permissionRow(permission)
+                    }
+                    if controller.localNetworkDenied || controller.lan.localNetworkDenied {
+                        LabeledContent("Local Network access is off.") {
+                            Button("Open Settings") { MacPrivacySettings.open("Privacy_LocalNetwork") }
+                                .controlSize(.small)
+                        }
+                    }
                 }
             }
             .formStyle(.grouped)
@@ -1696,6 +1678,7 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             permissions.refresh()
             controller.refreshAudioDriverStatus()
+            controller.lan.retryLocalNetworkDiscovery()
         }
         .onReceive(NotificationCenter.default.publisher(for: VirtualAudioOutputs.devicesChanged)) { _ in
             controller.refreshAudioDriverStatus()
@@ -1734,32 +1717,22 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder
-    private func permissionRow(_ title: String, granted: Bool, uncertain: Bool = false,
-                               help: String, anchor: String,
-                               request: (() -> Void)? = nil) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Image(systemName: uncertain ? "questionmark.circle.fill"
-                            : granted ? "checkmark.circle.fill" : "xmark.circle.fill")
-                .foregroundStyle(uncertain ? .orange : granted ? .green : .red)
+    private func permissionRow(_ permission: SenderPermission) -> some View {
+        let granted = permissions.isGranted(permission)
+        return HStack(alignment: .firstTextBaseline) {
+            Image(systemName: granted ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .foregroundStyle(granted ? .green : .red)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                if uncertain || !granted {
-                    Text(help)
+                Text(permission.title)
+                if !granted {
+                    Text(permission.explanation)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
             Spacer()
-            if uncertain || !granted {
-                if let request {
-                    Button("Grant…") { request() }
-                        .controlSize(.small)
-                        .help("Ask macOS for this permission. If the system dialog was already dismissed once, this registers the app under \(title) in System Settings — flip the toggle there.")
-                }
-                Button("Open Settings") {
-                    PermissionMonitor.openPrivacyPane(anchor)
-                }
+            if !granted {
+                Button("Grant…") { PermissionGuide.shared.show(for: permission) }
                 .controlSize(.small)
             }
         }

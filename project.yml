@@ -129,6 +129,7 @@ targets:
       - Mac/Log.swift
       - Mac/LogPolicies.swift
       - Mac/CheckForUpdatesView.swift
+      - Mac/MacPrivacySettings.swift
     dependencies:
       - package: Sparkle
     preBuildScripts:

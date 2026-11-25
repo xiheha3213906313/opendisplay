@@ -51,6 +51,7 @@ private struct ReceiverStatusSection: View {
         Section("This Mac as a display") {
             LANReceiverControls(lan: receiver.lan, connected: receiver.connected,
                                 disconnect: receiver.disconnectLAN)
+            ReceiverNetworkPermissionRow(lan: receiver.lan)
             HStack(alignment: .firstTextBaseline) {
                 Circle()
                     .fill(receiver.connected ? Color.green : Color.orange)
@@ -95,6 +96,27 @@ private struct ReceiverStatusSection: View {
         case let .updateReceiver(message, _): return message
         case let .updateMac(message): return message
         case nil: return nil
+        }
+    }
+}
+
+private struct ReceiverNetworkPermissionRow: View {
+    @ObservedObject var lan: LANService
+
+    var body: some View {
+        Group {
+            if lan.localNetworkDenied {
+                HStack {
+                    Label("Local Network access is off.", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    Button("Open Settings") { MacPrivacySettings.open("Privacy_LocalNetwork") }
+                        .controlSize(.small)
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            lan.retryLocalNetworkDiscovery()
         }
     }
 }
