@@ -176,6 +176,10 @@ jobs:
     # appcast step can guard on its presence via the allowed `env` context.
     env:
       SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+      # Step `if:` cannot read secrets directly. Empty means the notarized
+      # lane cannot run; the disk-image step below does not need them.
+      MATCH_DEPLOY_KEY: ${{ secrets.MATCH_DEPLOY_KEY }}
+      DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -195,11 +199,13 @@ jobs:
         run: xcodegen generate
 
       - name: Set up SSH for match certs repo
+        if: env.MATCH_DEPLOY_KEY != '' && env.DEVELOPMENT_TEAM != ''
         uses: webfactory/ssh-agent@v0.10.0
         with:
           ssh-private-key: ${{ secrets.MATCH_DEPLOY_KEY }}
 
       - name: Build notarized macOS app
+        if: env.MATCH_DEPLOY_KEY != '' && env.DEVELOPMENT_TEAM != ''
         env:
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
@@ -215,6 +221,48 @@ jobs:
           export APP_MARKETING_VERSION="${TAG_NAME#v}"
           bundle exec fastlane mac build_release
           bundle exec fastlane mac build_receiver_release
+
+      # Same asset names as the notarized lane. Runs from this workflow file
+      # (the dispatch ref) against the tag checkout above, so it does not
+      # depend on Fastlane changes that exist only on a branch.
+      - name: Build macOS disk images
+        if: env.MATCH_DEPLOY_KEY == '' || env.DEVELOPMENT_TEAM == ''
+        env:
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+          APP_BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          version="${TAG_NAME#v}"
+          build_app() {
+            local scheme="$1" derived="$2"
+            xcodebuild build \
+              -project OpenSidecar.xcodeproj \
+              -scheme "$scheme" \
+              -configuration Release \
+              -destination 'platform=macOS' \
+              -derivedDataPath "$derived" \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              DEVELOPMENT_TEAM="" \
+              "MARKETING_VERSION=${version}" \
+              "CURRENT_PROJECT_VERSION=${APP_BUILD_NUMBER}"
+          }
+          build_app OpenSidecarMac build/sender
+          build_app OpenSidecarMacReceiver build/receiver
+          sender=$(find build/sender/Build/Products -type d -name 'OpenDisplay.app' | head -1)
+          receiver=$(find build/receiver/Build/Products -type d -name 'OpenDisplay Receiver.app' | head -1)
+          [ -n "$sender" ] && [ -n "$receiver" ]
+          mkdir -p build/export
+          stage=$(mktemp -d)
+          mkdir -p "$stage/sender" "$stage/receiver"
+          cp -R "$sender" "$stage/sender/"
+          ln -s /Applications "$stage/sender/Applications"
+          hdiutil create -volname "OpenDisplay" -srcfolder "$stage/sender" -ov -format UDZO build/export/OpenDisplay.dmg
+          cp -R "$receiver" "$stage/receiver/"
+          ln -s /Applications "$stage/receiver/Applications"
+          hdiutil create -volname "OpenDisplay Receiver" -srcfolder "$stage/receiver" -ov -format UDZO build/export/OpenDisplayReceiver.dmg
+          rm -rf "$stage"
 
       # Both Mac apps ship on every release: the sender (macOS 14+) and the
       # standalone receiver (macOS 12+, issue #241).
