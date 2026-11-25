@@ -17,7 +17,7 @@ release PR. Ordinary pushes do not open release PRs on this fork.
 | macOS receiver | `OpenSidecarMacReceiver` | `OpenDisplayReceiver.dmg` |
 | Linux sender (beta) | `linux/crates/od-sender` | `od-sender-{x86_64,aarch64}-unknown-linux-gnu.tar.gz` and checksums |
 | Linux receiver (beta) | `linux/crates/od-receiver` | `od-receiver-{x86_64,aarch64}.flatpak` and checksums |
-| Android receiver | `Android/` | Signed `OpenDisplay-Android.apk` and checksum, when the fork's Android key is configured |
+| Android receiver | `Android/` | Signed `OpenDisplay-Android.apk` and checksum |
 
 The macOS apps are built without Developer ID signing or notarization. When
 testing a trusted download, try opening it once, then choose **Open Anyway** in
@@ -61,10 +61,12 @@ version that already exists.
 The Android build takes `versionName` from the tag without the `v`.
 Its `versionCode` is major × 1000000 + minor × 10000 + patch × 100.
 
-To attach an installable APK, configure the fork's
-`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
-`ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` secrets. Keep the same signing
-key across releases so an APK can update an existing installation.
+The APK uses the fork's signing helper. Its `ANDROID_KEYSTORE_BASE64`,
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and
+`ANDROID_KEY_PASSWORD` secrets take precedence over the repository key.
+The repository key is public, so anyone with the key can sign an APK under
+that identity. Keep the same signing key to update existing installations.
+See [Android signing](Android/release-keystore/README.md).
 
 ## Release impact record
 
@@ -186,7 +188,7 @@ A clean average does not excuse severe tail latency or recovery failures.
 - [ ] The release notes end with the "Linux (beta)" section, and
       `od-sender --version` from a tarball prints the release version.
 - [ ] Both DMGs mount and the apps launch on a test Mac after local approval.
-- [ ] When Android signing is configured, the release contains `OpenDisplay-Android.apk` and its `.sha256`,
+- [ ] The release contains `OpenDisplay-Android.apk` and its `.sha256`,
       `apksigner verify --print-certs` shows the release certificate (the same
       one as every earlier release), and the APK installs over the previous
       release without uninstalling.

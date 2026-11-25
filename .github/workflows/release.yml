@@ -189,7 +189,7 @@ jobs:
             build_and_upload OpenSidecarMacReceiver build/receiver "OpenDisplay Receiver" OpenDisplayReceiver.dmg
           fi
 
-  # A GitHub APK is signed with the fork's Android key so it can be installed.
+  # Sign new APKs with the fork's existing signing helper.
   build-android:
     needs: release-please
     if: >-
@@ -201,25 +201,24 @@ jobs:
       TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
       APK_EXISTS: ${{ needs.release-please.outputs.android_apk_exists }}
       CHECKSUM_EXISTS: ${{ needs.release-please.outputs.android_checksum_exists }}
-      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
     defaults:
       run:
         working-directory: Android
     steps:
       - uses: actions/checkout@v6
-        if: env.APK_EXISTS != 'true' && env.ANDROID_KEYSTORE_BASE64 != ''
+        if: env.APK_EXISTS != 'true'
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
 
       - uses: actions/setup-java@v5
-        if: env.APK_EXISTS != 'true' && env.ANDROID_KEYSTORE_BASE64 != ''
+        if: env.APK_EXISTS != 'true'
         with:
           distribution: temurin
           java-version: 17
 
       # Derive both Android version fields from the release tag.
       - name: Build release APK (unsigned)
-        if: env.APK_EXISTS != 'true' && env.ANDROID_KEYSTORE_BASE64 != ''
+        if: env.APK_EXISTS != 'true'
         run: |
           set -euo pipefail
           VERSION="${TAG_NAME#v}"
@@ -228,35 +227,32 @@ jobs:
           ./gradlew --no-daemon assembleRelease \
             -PappVersionName="$VERSION" -PappVersionCode="$CODE"
 
-      # minSdk 21 needs the v1 (JAR) signature for Android 5 and 6; apksigner
-      # adds it on its own because it reads minSdk from the APK.
+      # Older tags predate the signing helper. Use the workflow's own revision
+      # for release tooling and the tag checkout for the app being signed.
+      - name: Check out APK signing tools
+        if: env.APK_EXISTS != 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-tools
+          sparse-checkout: Android/release-keystore
+          persist-credentials: false
+
       - name: Sign APK
-        if: env.APK_EXISTS != 'true' && env.ANDROID_KEYSTORE_BASE64 != ''
+        if: env.APK_EXISTS != 'true'
         env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
-          echo "Using $BUILD_TOOLS"
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
           mkdir -p dist
-          "$BUILD_TOOLS/zipalign" -p -f 4 \
+          bash ../.release-tools/Android/release-keystore/sign-release-apk.sh \
             app/build/outputs/apk/release/app-release-unsigned.apk \
-            "$RUNNER_TEMP/aligned.apk"
-          "$BUILD_TOOLS/apksigner" sign \
-            --ks "$RUNNER_TEMP/release.jks" \
-            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
-            --ks-key-alias "$ANDROID_KEY_ALIAS" \
-            --key-pass env:ANDROID_KEY_PASSWORD \
-            --out dist/OpenDisplay-Android.apk \
-            "$RUNNER_TEMP/aligned.apk"
-          rm -f "$RUNNER_TEMP/release.jks"
-          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs dist/OpenDisplay-Android.apk
+            dist/OpenDisplay-Android.apk
 
       - name: Upload APK and checksum
-        if: env.APK_EXISTS == 'true' || env.ANDROID_KEYSTORE_BASE64 != ''
         working-directory: ${{ github.workspace }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -282,8 +278,3 @@ jobs:
           if [[ "$APK_EXISTS" != true ]]; then
             gh release upload "$TAG_NAME" "$apk"
           fi
-
-      - name: Report skipped upload
-        if: env.APK_EXISTS != 'true' && env.ANDROID_KEYSTORE_BASE64 == ''
-        working-directory: ${{ github.workspace }}
-        run: echo "::warning::ANDROID_KEYSTORE_BASE64 is not set, so no APK was attached to this release."
