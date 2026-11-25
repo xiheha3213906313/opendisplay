@@ -3,21 +3,14 @@ name: Release
 on:
   push:
     branches: [main]
-  # Recovery: build and upload every platform for a release that already
-  # exists (release-please created the tag, but a later step failed before
-  # the build jobs ran).
+  # Recover missing artifacts for an existing GitHub release.
   workflow_dispatch:
     inputs:
       tag:
         description: Existing release tag to build, e.g. v1.26.0
         required: true
-      publish_stores:
-        description: Also upload to TestFlight and Google Play. Leave false for a GitHub-only release.
-        type: boolean
-        required: false
-        default: false
       update_main:
-        description: Commit the Arch PKGBUILDs and Sparkle appcasts to main. Leave false to leave main unchanged.
+        description: Commit the Arch PKGBUILDs to main.
         type: boolean
         required: false
         default: false
@@ -30,14 +23,10 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  # Lets the build-mac job dispatch the Pages deploy after committing the
-  # Sparkle appcast (a GITHUB_TOKEN push won't auto-trigger pages.yml).
-  actions: write
 
-# Serialize release runs on the same ref so two quick merges can't race two
-# uploads. Never cancel an in-flight run — it may be mid-upload to TestFlight.
+# Serialize publication across refs, including a manual recovery of a push release.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
@@ -46,6 +35,10 @@ jobs:
     outputs:
       release_created: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.rp.outputs.release_created || steps.rp2.outputs.release_created || steps.rp3.outputs.release_created }}
       tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || steps.rp.outputs.tag_name || steps.rp2.outputs.tag_name || steps.rp3.outputs.tag_name }}
+      mac_sender_exists: ${{ steps.assets.outputs.mac_sender_exists }}
+      mac_receiver_exists: ${{ steps.assets.outputs.mac_receiver_exists }}
+      android_apk_exists: ${{ steps.assets.outputs.android_apk_exists }}
+      android_checksum_exists: ${{ steps.assets.outputs.android_checksum_exists }}
     steps:
       # Manifest mode (release-please-config.json, .release-please-manifest.json)
       # only to bump linux/Cargo.toml and linux/Cargo.lock with the app
@@ -82,64 +75,28 @@ jobs:
         id: rp3
         with:
           skip-github-pull-request: true
-      - name: Check the release to rebuild exists
-        if: github.event_name == 'workflow_dispatch'
+      - name: Check which release assets are already uploaded
+        id: assets
+        if: github.event_name == 'workflow_dispatch' || steps.rp.outputs.release_created == 'true' || steps.rp2.outputs.release_created == 'true' || steps.rp3.outputs.release_created == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || steps.rp.outputs.tag_name || steps.rp2.outputs.tag_name || steps.rp3.outputs.tag_name }}
         run: |
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a vX.Y.Z tag: $TAG"; exit 1; }
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
-
-  # GitHub-only unless a workflow_dispatch run sets publish_stores. A push
-  # to main must not upload to TestFlight.
-  build-ios:
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true' && github.event_name == 'workflow_dispatch' && inputs.publish_stores == true
-    # The iOS SDK decides how the app lays out on iPhone Duo: built with the
-    # iOS 26 SDK it runs letterboxed in a phone-sized window, only the 27.1
-    # SDK lets it use the full inner and outer displays (issues #446, #448).
-    # macos-26 tops out at Xcode 26.x, so this job runs on the Xcode 27 image
-    # and pins the Xcode instead of taking whatever that image defaults to.
-    runs-on: xcode-27
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
-
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.3'
-          bundler-cache: true
-
-      - name: Install XcodeGen
-        run: brew install xcodegen cmake
-
-      - name: Generate project
-        env:
-          DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
-        run: xcodegen generate
-
-      - name: Set up SSH for match certs repo
-        uses: webfactory/ssh-agent@v0.10.0
-        with:
-          ssh-private-key: ${{ secrets.MATCH_DEPLOY_KEY }}
-
-      - name: Build iOS app and upload to TestFlight
-        env:
-          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
-          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
-          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          APP_STORE_CONNECT_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_KEY_CONTENT }}
-          DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
-          APP_BUILD_NUMBER: ${{ github.run_number }}
-        run: |
-          export APP_MARKETING_VERSION="${TAG_NAME#v}"
-          bundle exec fastlane ios beta
+          assets=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            --jq '.assets[] | select(.state == "uploaded") | .name')
+          asset_exists() {
+            local name="$1" output="$2"
+            if grep -Fxq -- "$name" <<< "$assets"; then
+              echo "$output=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$output=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+          asset_exists OpenDisplay.dmg mac_sender_exists
+          asset_exists OpenDisplayReceiver.dmg mac_receiver_exists
+          asset_exists OpenDisplay-Android.apk android_apk_exists
+          asset_exists OpenDisplay-Android.apk.sha256 android_checksum_exists
 
   # Linux sender tarballs and receiver Flatpak bundles, attached to the same
   # GitHub release; the job also appends the Linux install notes to it. One
@@ -167,74 +124,42 @@ jobs:
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
 
+  # The fork distributes macOS disk images without Developer ID notarization.
   build-mac:
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: >-
+      needs.release-please.outputs.release_created == 'true' &&
+      (needs.release-please.outputs.mac_sender_exists != 'true' ||
+       needs.release-please.outputs.mac_receiver_exists != 'true')
     runs-on: macos-26
-    # The `secrets` context can't be referenced in a step-level `if:` (it's a
-    # workflow-validation error). Map the Sparkle key to a job env var so the
-    # appcast step can guard on its presence via the allowed `env` context.
     env:
-      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-      # Step `if:` cannot read secrets directly. Empty means the notarized
-      # lane cannot run; the disk-image step below does not need them.
-      MATCH_DEPLOY_KEY: ${{ secrets.MATCH_DEPLOY_KEY }}
-      DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
+      TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+      APP_BUILD_NUMBER: ${{ github.run_number }}
+      SENDER_EXISTS: ${{ needs.release-please.outputs.mac_sender_exists }}
+      RECEIVER_EXISTS: ${{ needs.release-please.outputs.mac_receiver_exists }}
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
 
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.3'
-          bundler-cache: true
-
-      - name: Install XcodeGen
+      - name: Install build dependencies
         run: brew install xcodegen cmake
 
       - name: Generate project
-        env:
-          DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
         run: xcodegen generate
 
-      - name: Set up SSH for match certs repo
-        if: env.MATCH_DEPLOY_KEY != '' && env.DEVELOPMENT_TEAM != ''
-        uses: webfactory/ssh-agent@v0.10.0
-        with:
-          ssh-private-key: ${{ secrets.MATCH_DEPLOY_KEY }}
-
-      - name: Build notarized macOS app
-        if: env.MATCH_DEPLOY_KEY != '' && env.DEVELOPMENT_TEAM != ''
+      - name: Build and upload missing macOS disk images
         env:
-          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
-          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
-          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          APP_STORE_CONNECT_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_KEY_CONTENT }}
-          DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
-          APP_BUILD_NUMBER: ${{ github.run_number }}
-          AUDIO_INSTALLER_CERTIFICATE_P12: ${{ secrets.AUDIO_INSTALLER_CERTIFICATE_P12 }}
-          AUDIO_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.AUDIO_INSTALLER_CERTIFICATE_PASSWORD }}
-        run: |
-          export APP_MARKETING_VERSION="${TAG_NAME#v}"
-          bundle exec fastlane mac build_release
-          bundle exec fastlane mac build_receiver_release
-
-      # Same asset names as the notarized lane. Runs from this workflow file
-      # (the dispatch ref) against the tag checkout above, so it does not
-      # depend on Fastlane changes that exist only on a branch.
-      - name: Build macOS disk images
-        if: env.MATCH_DEPLOY_KEY == '' || env.DEVELOPMENT_TEAM == ''
-        env:
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
-          APP_BUILD_NUMBER: ${{ github.run_number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           version="${TAG_NAME#v}"
-          build_app() {
-            local scheme="$1" derived="$2"
+          stage=$(mktemp -d)
+          trap 'rm -rf "$stage"' EXIT
+          mkdir -p build/export
+
+          build_and_upload() {
+            local scheme="$1" derived="$2" app_name="$3" asset="$4"
             xcodebuild build \
               -project OpenSidecar.xcodeproj \
               -scheme "$scheme" \
@@ -247,146 +172,54 @@ jobs:
               DEVELOPMENT_TEAM="" \
               "MARKETING_VERSION=${version}" \
               "CURRENT_PROJECT_VERSION=${APP_BUILD_NUMBER}"
+            local app="$derived/Build/Products/Release/$app_name.app"
+            local image_dir="$stage/$scheme"
+            mkdir -p "$image_dir"
+            cp -R "$app" "$image_dir/"
+            ln -s /Applications "$image_dir/Applications"
+            hdiutil create -volname "$app_name" -srcfolder "$image_dir" \
+              -format UDZO "build/export/$asset"
+            gh release upload "$TAG_NAME" "build/export/$asset"
           }
-          build_app OpenSidecarMac build/sender
-          build_app OpenSidecarMacReceiver build/receiver
-          sender=$(find build/sender/Build/Products -type d -name 'OpenDisplay.app' | head -1)
-          receiver=$(find build/receiver/Build/Products -type d -name 'OpenDisplay Receiver.app' | head -1)
-          [ -n "$sender" ] && [ -n "$receiver" ]
-          mkdir -p build/export
-          stage=$(mktemp -d)
-          mkdir -p "$stage/sender" "$stage/receiver"
-          cp -R "$sender" "$stage/sender/"
-          ln -s /Applications "$stage/sender/Applications"
-          hdiutil create -volname "OpenDisplay" -srcfolder "$stage/sender" -ov -format UDZO build/export/OpenDisplay.dmg
-          cp -R "$receiver" "$stage/receiver/"
-          ln -s /Applications "$stage/receiver/Applications"
-          hdiutil create -volname "OpenDisplay Receiver" -srcfolder "$stage/receiver" -ov -format UDZO build/export/OpenDisplayReceiver.dmg
-          rm -rf "$stage"
 
-      # Both Mac apps ship on every release: the sender (macOS 14+) and the
-      # standalone receiver (macOS 12+, issue #241).
-      - name: Upload macOS artifacts to release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "${{ needs.release-please.outputs.tag_name }}" \
-            build/export/OpenDisplay.dmg \
-            build/export/OpenDisplayReceiver.dmg
-
-      # --- Sparkle auto-update: generate + publish the appcasts (issue #52) ---
-      # Builds appcast.xml (sender) and appcast-receiver.xml (receiver app)
-      # from the just-released, notarized DMGs and commits them to public/ on
-      # main. One feed per app: each bundle has its own SUFeedURL, and a mixed
-      # feed would offer the wrong app's update. The Pages workflow (pages.yml) triggers
-      # on public/** changes, copies public/ into docs/ via the Vite build, and
-      # deploys it — so https://opendisplay.app/appcast.xml (the SUFeedURL in
-      # project.yml) resolves.
-      #
-      # No-ops gracefully until the maintainer adds the SPARKLE_PRIVATE_KEY
-      # secret (the EdDSA private key from Sparkle's `generate_keys`), so this
-      # never hard-fails a release before auto-update is switched on.
-      # Commits appcasts to main. A manual run skips that unless update_main
-      # is set; the DMGs are still uploaded above.
-      - name: Publish Sparkle appcast to GitHub Pages
-        if: ${{ env.SPARKLE_PRIVATE_KEY != '' && (github.event_name != 'workflow_dispatch' || inputs.update_main == true) }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
-          # Sparkle release that ships the generate_appcast / sign_update tools.
-          SPARKLE_TOOLS_VERSION: "2.6.4"
-        run: |
-          set -euo pipefail
-
-          # Sparkle's CLI tools (generate_appcast, sign_update) ship in the
-          # official release tarball — download the matching version.
-          curl -fsSL -o /tmp/sparkle.tar.xz \
-            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_TOOLS_VERSION}/Sparkle-${SPARKLE_TOOLS_VERSION}.tar.xz"
-          mkdir -p /tmp/sparkle && tar -xf /tmp/sparkle.tar.xz -C /tmp/sparkle
-          GEN_APPCAST="$(find /tmp/sparkle -name generate_appcast -type f | head -1)"
-          echo "Using $GEN_APPCAST"
-
-          # The EdDSA private key (CI secret) → file for --ed-key-file.
-          printf '%s' "$SPARKLE_PRIVATE_KEY" > /tmp/sparkle_ed_priv
-
-          # generate_appcast wants a directory of update archives per feed.
-          # Point the download links at the GitHub Release assets where the
-          # DMGs live.
-          mkdir -p /tmp/appcast-updates /tmp/appcast-receiver-updates
-          cp build/export/OpenDisplay.dmg /tmp/appcast-updates/
-          cp build/export/OpenDisplayReceiver.dmg /tmp/appcast-receiver-updates/
-
-          "$GEN_APPCAST" \
-            --ed-key-file /tmp/sparkle_ed_priv \
-            --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}/" \
-            -o /tmp/appcast-updates/appcast.xml \
-            /tmp/appcast-updates
-          "$GEN_APPCAST" \
-            --ed-key-file /tmp/sparkle_ed_priv \
-            --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}/" \
-            -o /tmp/appcast-receiver-updates/appcast-receiver.xml \
-            /tmp/appcast-receiver-updates
-
-          # Commit the feed into public/ on main; Pages picks it up from there.
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout main
-          mkdir -p public
-          cp /tmp/appcast-updates/appcast.xml public/appcast.xml
-          cp /tmp/appcast-receiver-updates/appcast-receiver.xml public/appcast-receiver.xml
-          rm -f /tmp/sparkle_ed_priv
-          git add public/appcast.xml public/appcast-receiver.xml
-          # Compare the STAGED files: plain `git diff` ignores untracked files,
-          # so the first-ever appcast (a brand-new public/appcast.xml) looked
-          # "unchanged" and was never committed. `--cached` sees the staged add.
-          if ! git diff --cached --quiet -- public/appcast.xml public/appcast-receiver.xml; then
-            git commit -m "chore(release): publish Sparkle appcasts for ${TAG_NAME} [skip ci]"
-            git push origin main
-            # Pushes made with GITHUB_TOKEN do NOT trigger other workflows
-            # (GitHub blocks recursive runs), so kick the Pages deploy
-            # explicitly via its workflow_dispatch entry point.
-            gh workflow run pages.yml --ref main || \
-              echo "could not dispatch pages.yml — deploy it manually"
-          else
-            echo "appcast.xml unchanged — nothing to publish"
+          if [[ "$SENDER_EXISTS" != true ]]; then
+            build_and_upload OpenSidecarMac build/sender OpenDisplay OpenDisplay.dmg
+          fi
+          if [[ "$RECEIVER_EXISTS" != true ]]; then
+            build_and_upload OpenSidecarMacReceiver build/receiver "OpenDisplay Receiver" OpenDisplayReceiver.dmg
           fi
 
-  # Android receiver: a signed APK attached to the same GitHub release as the
-  # DMGs, so releases/latest/download/OpenDisplay-Android.apk (the website's
-  # download link) always resolves. Gradle builds it unsigned; apksigner signs
-  # it here, so the keystore never touches the Gradle config or the repo.
+  # A GitHub APK is signed with the fork's Android key so it can be installed.
   build-android:
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: >-
+      needs.release-please.outputs.release_created == 'true' &&
+      (needs.release-please.outputs.android_apk_exists != 'true' ||
+       needs.release-please.outputs.android_checksum_exists != 'true')
     runs-on: ubuntu-latest
-    # Same rule as build-mac: `secrets` can't appear in a step `if:`, so map
-    # the keystore to a job env var and guard on that. Until the maintainer
-    # adds the ANDROID_* secrets, this job builds but uploads nothing.
     env:
+      TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+      APK_EXISTS: ${{ needs.release-please.outputs.android_apk_exists }}
+      CHECKSUM_EXISTS: ${{ needs.release-please.outputs.android_checksum_exists }}
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
     defaults:
       run:
         working-directory: Android
     steps:
       - uses: actions/checkout@v6
+        if: env.APK_EXISTS != 'true' && env.ANDROID_KEYSTORE_BASE64 != ''
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
 
       - uses: actions/setup-java@v5
+        if: env.APK_EXISTS != 'true' && env.ANDROID_KEYSTORE_BASE64 != ''
         with:
           distribution: temurin
           java-version: 17
 
-      # versionName is the release tag; versionCode is derived from it as
-      # major*1000000 + minor*10000 + patch*100 + rebuild (1.26.0 -> 1260000)
-      # so it only ever grows. CI always uses rebuild 0; the last two digits
-      # leave room for manual Play re-uploads of the same version, since Play
-      # never frees a versionCode once used.
-      # Needs the -PappVersionName/-PappVersionCode hook in app/build.gradle.kts.
+      # Derive both Android version fields from the release tag.
       - name: Build release APK (unsigned)
-        env:
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        if: env.APK_EXISTS != 'true' && env.ANDROID_KEYSTORE_BASE64 != ''
         run: |
           set -euo pipefail
           VERSION="${TAG_NAME#v}"
@@ -398,7 +231,7 @@ jobs:
       # minSdk 21 needs the v1 (JAR) signature for Android 5 and 6; apksigner
       # adds it on its own because it reads minSdk from the APK.
       - name: Sign APK
-        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
+        if: env.APK_EXISTS != 'true' && env.ANDROID_KEYSTORE_BASE64 != ''
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -421,96 +254,36 @@ jobs:
             "$RUNNER_TEMP/aligned.apk"
           rm -f "$RUNNER_TEMP/release.jks"
           "$BUILD_TOOLS/apksigner" verify --verbose --print-certs dist/OpenDisplay-Android.apk
-          (cd dist && sha256sum OpenDisplay-Android.apk > OpenDisplay-Android.apk.sha256)
 
-      - name: Upload APK to release
-        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
+      - name: Upload APK and checksum
+        if: env.APK_EXISTS == 'true' || env.ANDROID_KEYSTORE_BASE64 != ''
+        working-directory: ${{ github.workspace }}
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          gh release upload "${{ needs.release-please.outputs.tag_name }}" \
-            dist/OpenDisplay-Android.apk \
-            dist/OpenDisplay-Android.apk.sha256
+          set -euo pipefail
+          apk=OpenDisplay-Android.apk
+          dist="$RUNNER_TEMP/android-release"
+          mkdir -p "$dist"
+          if [[ "$APK_EXISTS" == true ]]; then
+            gh release download "$TAG_NAME" --pattern "$apk" --dir "$dist"
+          else
+            cp "Android/dist/$apk" "$dist/$apk"
+          fi
+          cd "$dist"
+          sha256sum "$apk" > "$apk.sha256"
+          if [[ "$CHECKSUM_EXISTS" == true ]]; then
+            # Replace an orphan checksum before publishing its matching APK.
+            gh release upload "$TAG_NAME" "$apk.sha256" --clobber
+          else
+            gh release upload "$TAG_NAME" "$apk.sha256"
+          fi
+          if [[ "$APK_EXISTS" != true ]]; then
+            gh release upload "$TAG_NAME" "$apk"
+          fi
 
       - name: Report skipped upload
-        if: ${{ env.ANDROID_KEYSTORE_BASE64 == '' }}
+        if: env.APK_EXISTS != 'true' && env.ANDROID_KEYSTORE_BASE64 == ''
+        working-directory: ${{ github.workspace }}
         run: echo "::warning::ANDROID_KEYSTORE_BASE64 is not set, so no APK was attached to this release."
-
-  # Google Play: the same release as an Android App Bundle on a testing track,
-  # like build-ios does for TestFlight. Production stays a manual promotion in
-  # Play Console. Play only accepts minSdk 24, so this build raises it; the
-  # GitHub APK above keeps 21. The bundle is signed with the UPLOAD key
-  # (upload.jks), not the app signing key: Play checks the upload signature
-  # and re-signs with its own key. Inactive until the PLAY_* and
-  # ANDROID_UPLOAD_* secrets exist; see RELEASING.md.
-  # Same gate as build-ios: a GitHub release does not upload to Play.
-  upload-play:
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true' && github.event_name == 'workflow_dispatch' && inputs.publish_stores == true
-    runs-on: ubuntu-latest
-    env:
-      PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
-      ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
-    steps:
-      - name: Report skipped upload
-        if: ${{ env.PLAY_SERVICE_ACCOUNT_JSON == '' || env.ANDROID_UPLOAD_KEYSTORE_BASE64 == '' }}
-        run: echo "::warning::PLAY_SERVICE_ACCOUNT_JSON or ANDROID_UPLOAD_KEYSTORE_BASE64 is not set, so nothing was uploaded to Google Play."
-
-      - uses: actions/checkout@v6
-        if: ${{ env.PLAY_SERVICE_ACCOUNT_JSON != '' && env.ANDROID_UPLOAD_KEYSTORE_BASE64 != '' }}
-        with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
-
-      - uses: actions/setup-java@v5
-        if: ${{ env.PLAY_SERVICE_ACCOUNT_JSON != '' && env.ANDROID_UPLOAD_KEYSTORE_BASE64 != '' }}
-        with:
-          distribution: temurin
-          java-version: 17
-
-      # Same versionCode formula as build-android, so the Play build and the
-      # APK of one release share it.
-      - name: Build Play bundle (minSdk 24)
-        if: ${{ env.PLAY_SERVICE_ACCOUNT_JSON != '' && env.ANDROID_UPLOAD_KEYSTORE_BASE64 != '' }}
-        working-directory: Android
-        env:
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
-        run: |
-          set -euo pipefail
-          VERSION="${TAG_NAME#v}"
-          IFS=. read -r MAJOR MINOR PATCH <<< "$VERSION"
-          CODE=$(( MAJOR * 1000000 + MINOR * 10000 + PATCH * 100 ))
-          ./gradlew --no-daemon bundleRelease -PappMinSdk=24 \
-            -PappVersionName="$VERSION" -PappVersionCode="$CODE"
-
-      - name: Sign bundle with the upload key
-        if: ${{ env.PLAY_SERVICE_ACCOUNT_JSON != '' && env.ANDROID_UPLOAD_KEYSTORE_BASE64 != '' }}
-        env:
-          ANDROID_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
-          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
-        run: |
-          set -euo pipefail
-          printf '%s' "$ANDROID_UPLOAD_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload.jks"
-          mkdir -p dist
-          jarsigner -keystore "$RUNNER_TEMP/upload.jks" \
-            -storepass:env ANDROID_UPLOAD_KEYSTORE_PASSWORD \
-            -sigalg SHA256withRSA -digestalg SHA-256 \
-            -signedjar dist/OpenDisplay-play.aab \
-            Android/app/build/outputs/bundle/release/app-release.aab \
-            "$ANDROID_UPLOAD_KEY_ALIAS"
-          rm -f "$RUNNER_TEMP/upload.jks"
-          jarsigner -verify dist/OpenDisplay-play.aab
-
-      - uses: ruby/setup-ruby@v1
-        if: ${{ env.PLAY_SERVICE_ACCOUNT_JSON != '' && env.ANDROID_UPLOAD_KEYSTORE_BASE64 != '' }}
-        with:
-          ruby-version: '3.3'
-          bundler-cache: true
-
-      # PLAY_TRACK (repository variable) names the testing track; "alpha" is
-      # the API name of Play Console's default closed testing track.
-      - name: Upload to Google Play
-        if: ${{ env.PLAY_SERVICE_ACCOUNT_JSON != '' && env.ANDROID_UPLOAD_KEYSTORE_BASE64 != '' }}
-        env:
-          PLAY_AAB_PATH: ${{ github.workspace }}/dist/OpenDisplay-play.aab
-          PLAY_TRACK: ${{ vars.PLAY_TRACK || 'alpha' }}
-        run: bundle exec fastlane android play_beta
