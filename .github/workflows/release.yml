@@ -142,8 +142,22 @@ jobs:
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Check out macOS release tools
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .mac-release-tools
+          sparse-checkout: tools/dmg
+          persist-credentials: false
+
       - name: Install build dependencies
-        run: brew install xcodegen cmake
+        run: |
+          brew install xcodegen cmake
+          python -m pip install dmgbuild==2.0.0
 
       - name: Generate project
         run: xcodegen generate
@@ -154,8 +168,6 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG_NAME#v}"
-          stage=$(mktemp -d)
-          trap 'rm -rf "$stage"' EXIT
           mkdir -p build/export
 
           build_and_upload() {
@@ -173,12 +185,7 @@ jobs:
               "MARKETING_VERSION=${version}" \
               "CURRENT_PROJECT_VERSION=${APP_BUILD_NUMBER}"
             local app="$derived/Build/Products/Release/$app_name.app"
-            local image_dir="$stage/$scheme"
-            mkdir -p "$image_dir"
-            cp -R "$app" "$image_dir/"
-            ln -s /Applications "$image_dir/Applications"
-            hdiutil create -volname "$app_name" -srcfolder "$image_dir" \
-              -format UDZO "build/export/$asset"
+            bash .mac-release-tools/tools/dmg/build.sh "$app" "build/export/$asset"
             gh release upload "$TAG_NAME" "build/export/$asset"
           }
 

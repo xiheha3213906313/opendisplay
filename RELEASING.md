@@ -24,6 +24,11 @@ testing a trusted download, try opening it once, then choose **Open Anyway** in
 **System Settings → Privacy & Security** if macOS blocks it. See
 [Apple's instructions](https://support.apple.com/en-us/102445).
 
+To preview the Finder layout locally, install `dmgbuild==2.0.0` in a Python
+3.11+ environment. Run `bash tools/dmg/build.sh path/to/OpenDisplay.app
+build/export/OpenDisplay.dmg` with that environment active. Use the receiver
+app and `OpenDisplayReceiver.dmg` to preview its disk image.
+
 To recover a partial release, run **Actions → Release → Run workflow** with
 the existing tag. The workflow keeps uploaded DMGs and APKs and fills in
 missing files. If only the APK checksum is missing, it hashes the uploaded APK.
