@@ -10,7 +10,7 @@ import SwiftUI
 // MARK: - Version gate (issue #135)
 
 /// Connection-independent update lever. On launch the app fetches a small
-/// policy file we host on GitHub Pages next to the Sparkle appcast and compares
+/// policy file hosted on GitHub Pages and compares
 /// its own version against it. This is the ONLY mechanism that can reach an
 /// install that never connects to an updated Mac (e.g. the large tail still on
 /// an old release) — the peer-driven `updateRequired` path (issue #132) can't.

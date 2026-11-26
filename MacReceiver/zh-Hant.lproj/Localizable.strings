@@ -5,6 +5,13 @@
 "Cable" = "有線";
 "Cancel" = "取消";
 "Check for Updates…" = "檢查更新…";
+"OpenDisplay %@ is available" = "OpenDisplay %@ 有新版本";
+"Download the disk image and open it to install the update." = "請下載並開啟磁碟映像來安裝更新。";
+"Download…" = "下載…";
+"Later" = "稍後";
+"OpenDisplay is up to date" = "OpenDisplay 已是最新版";
+"Could not check for updates" = "無法檢查更新";
+"Try again later." = "請稍後再試。";
 "Close" = "關閉";
 "Closed" = "已關閉";
 "Connected" = "已連線";

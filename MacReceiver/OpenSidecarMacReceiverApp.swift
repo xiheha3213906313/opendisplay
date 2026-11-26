@@ -10,7 +10,6 @@
 
 import AppKit
 import SwiftUI
-import Sparkle
 
 // Plain AppKit lifecycle rather than a SwiftUI `App`: a `WindowGroup` sizes
 // its window itself (it opened at ~850×550 regardless of the content frame)
@@ -29,8 +28,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         app.delegate = delegate
         withExtendedLifetime(delegate) { app.run() }
     }
-
-    private lazy var updater = ApplicationUpdates.makeController()
 
     private var panel: NSWindow?
 
@@ -68,8 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showPanel() {
         if panel == nil {
-            let content = ReceiverContentView(controller: ReceiverController.shared,
-                                              updater: updater)
+            let content = ReceiverContentView(controller: ReceiverController.shared)
             let hosting = NSHostingView(rootView: content)
             let w = NSWindow(contentRect: NSRect(origin: .zero, size: ReceiverContentView.size),
                              styleMask: [.titled, .closable, .miniaturizable],
@@ -84,6 +80,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel?.makeKeyAndOrderFront(nil)
     }
 
+    @objc private func checkForUpdates() {
+        ApplicationUpdates.shared.check(.receiver)
+    }
+
     /// The minimum a windowed app needs: an app menu with Quit, Edit for the
     /// name field's copy/paste and undo, and a Window menu for Close/Minimize.
     private func makeMainMenu() -> NSMenu {
@@ -95,12 +95,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                         keyEquivalent: "")
         appMenu.addItem(.separator())
-        if let updater {
-            appMenu.addItem(withTitle: String(localized: "Check for Updates…"),
-                            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
-                            keyEquivalent: "").target = updater
-            appMenu.addItem(.separator())
-        }
+        appMenu.addItem(withTitle: String(localized: "Check for Updates…"),
+                        action: #selector(checkForUpdates), keyEquivalent: "").target = self
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: String(localized: "Hide OpenDisplay Receiver"),
                         action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
@@ -139,7 +136,6 @@ struct ReceiverContentView: View {
     static let size = CGSize(width: 440, height: 520)
 
     @ObservedObject var controller: ReceiverController
-    let updater: SPUStandardUpdaterController?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -178,9 +174,7 @@ struct ReceiverContentView: View {
                 Button("Logs") { Log.revealInFinder() }
                     .controlSize(.small)
                     .help("Reveal the OpenDisplay Receiver log files in Finder")
-                if let updater {
-                    CheckForUpdatesView(updater: updater)
-                }
+                CheckForUpdatesView(product: .receiver)
                 Button("Quit") { NSApp.terminate(nil) }
                     .controlSize(.small)
             }

@@ -396,7 +396,9 @@ your iPhone, iPad or Android device (receives and displays). To use a
 
 ### Releases
 
-Download the Mac, Linux, and signed Android packages from this repository's [GitHub Releases](https://github.com/xiheha3213906313/opendisplay/releases/latest). The macOS sender requires macOS 14 or later; the macOS receiver requires macOS 12 or later. Because this fork uses a different application identifier, it installs separately from the upstream app.
+Download the [Mac sender](https://raw.githubusercontent.com/xiheha3213906313/opendisplay/main/downloads/macos/OpenDisplay.dmg) or the [Mac receiver](https://raw.githubusercontent.com/xiheha3213906313/opendisplay/main/downloads/macos/OpenDisplayReceiver.dmg) from this repository's `main` branch. If your installed app has no **Check for Updates** button, install the current DMG once to get it. The macOS sender requires macOS 14 or later. The macOS receiver requires macOS 12 or later on Apple silicon. Check the receiver DMG's requirements if you use macOS 12 on Intel. Because this fork uses a different application identifier, it installs separately from the upstream app.
+
+Download the Linux and signed Android packages from [GitHub Releases](https://github.com/xiheha3213906313/opendisplay/releases/latest).
 
 Build the iPhone and iPad receiver from source ([Quick start (from source)](#quick-start-from-source)). It requires iOS or iPadOS 15 or later.
 
@@ -484,16 +486,15 @@ decoder was failing. Attach both if you can.
 
 ## Updates and releases
 
-See [RELEASING.md](RELEASING.md) for build and compatibility checks.
+On Mac, **Check for Updates…** reads the installer versions from `main` and
+offers the matching disk image. See [RELEASING.md](RELEASING.md) for build and
+compatibility checks.
 
 ## Contributing
 
 Issues and pull requests are welcome in this repository.
-The codebase is intentionally small: ~4 Swift files per platform, with
-[Sparkle](https://sparkle-project.org) (SPM) as the macOS app's only
-runtime dependency, for auto-update. The [How it works](#how-it-works)
-section above is the architecture doc; see `Mac/CGVirtualDisplayPrivate.h`
-for the private API surface.
+The [How it works](#how-it-works) section describes the architecture. See
+`Mac/CGVirtualDisplayPrivate.h` for the private API surface.
 
 Releases are automated with
 [release-please](https://github.com/googleapis/release-please): use

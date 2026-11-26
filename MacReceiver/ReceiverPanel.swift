@@ -90,7 +90,7 @@ private struct ReceiverStatusSection: View {
     }
 
     /// Compatibility copy from the sender (issue #132) — surfaced inline;
-    /// the Mac app has Sparkle, so there is no blocking gate like on iOS.
+    /// Mac users can check for updates from the receiver window.
     private var peerMessage: String? {
         switch receiver.peerSignal {
         case .updateReceiver: return String(localized: "Update OpenDisplay Receiver to continue.")

@@ -137,8 +137,6 @@ jobs:
       APP_BUILD_NUMBER: ${{ github.run_number }}
       SENDER_EXISTS: ${{ needs.release-please.outputs.mac_sender_exists }}
       RECEIVER_EXISTS: ${{ needs.release-please.outputs.mac_receiver_exists }}
-      SPARKLE_SENDER_PUBLIC_KEY: ${{ vars.SPARKLE_SENDER_PUBLIC_KEY }}
-      SPARKLE_RECEIVER_PUBLIC_KEY: ${{ vars.SPARKLE_RECEIVER_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -173,11 +171,7 @@ jobs:
           mkdir -p build/export
 
           build_and_upload() {
-            local scheme="$1" derived="$2" app_name="$3" asset="$4" public_key="$5" entitlements="$6"
-            if [[ ! "$public_key" =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
-              echo "::error::Configure the repository Sparkle public key for $scheme"
-              exit 1
-            fi
+            local scheme="$1" derived="$2" app_name="$3" asset="$4" entitlements="$5"
             xcodebuild build \
               -project OpenSidecar.xcodeproj \
               -scheme "$scheme" \
@@ -188,7 +182,6 @@ jobs:
               CODE_SIGNING_REQUIRED=NO \
               CODE_SIGN_IDENTITY="" \
               DEVELOPMENT_TEAM="" \
-              "OPEN_DISPLAY_SPARKLE_PUBLIC_KEY=$public_key" \
               "MARKETING_VERSION=${version}" \
               "CURRENT_PROJECT_VERSION=${APP_BUILD_NUMBER}"
             local app="$derived/Build/Products/Release/$app_name.app"
@@ -202,14 +195,14 @@ jobs:
 
           if [[ "$SENDER_EXISTS" != true ]]; then
             build_and_upload OpenSidecarMac build/sender OpenDisplay OpenDisplay.dmg \
-              "$SPARKLE_SENDER_PUBLIC_KEY" Mac/OpenSidecarMac.entitlements
+              Mac/OpenSidecarMac.entitlements
           fi
           if [[ "$RECEIVER_EXISTS" != true ]]; then
             build_and_upload OpenSidecarMacReceiver build/receiver "OpenDisplay Receiver" OpenDisplayReceiver.dmg \
-              "$SPARKLE_RECEIVER_PUBLIC_KEY" MacReceiver/OpenSidecarMacReceiver.entitlements
+              MacReceiver/OpenSidecarMacReceiver.entitlements
           fi
 
-  publish-mac-updates:
+  publish-mac-downloads:
     needs: [release-please, build-mac]
     if: >-
       ${{ always() && !cancelled() &&
@@ -221,15 +214,11 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.workflow_sha }}
-      - name: Publish verified appcasts from the stable GitHub release
+      - name: Publish Mac installers to main
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
-          SPARKLE_SENDER_PUBLIC_KEY: ${{ vars.SPARKLE_SENDER_PUBLIC_KEY }}
-          SPARKLE_RECEIVER_PUBLIC_KEY: ${{ vars.SPARKLE_RECEIVER_PUBLIC_KEY }}
-          SPARKLE_SENDER_PRIVATE_KEY: ${{ secrets.SPARKLE_SENDER_PRIVATE_KEY }}
-          SPARKLE_RECEIVER_PRIVATE_KEY: ${{ secrets.SPARKLE_RECEIVER_PRIVATE_KEY }}
-        run: bash tools/sparkle/publish-appcasts.sh "$TAG_NAME"
+        run: bash tools/updates/publish-mac-downloads.sh "$TAG_NAME"
 
   # Sign new APKs with the fork's existing signing helper.
   build-android:

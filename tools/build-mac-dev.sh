@@ -19,19 +19,18 @@ case "${1:-sender}" in
         app_name="OpenDisplay Receiver Dev"
         derived="$root/build/macos-dev-receiver"
         sources=(MacReceiver/*.swift Mac/Log.swift Mac/LogPolicies.swift
-            Mac/CheckForUpdatesView.swift Mac/MacPrivacySettings.swift)
+            Mac/CheckForUpdatesView.swift Mac/MainBranchUpdates.swift Mac/MacPrivacySettings.swift)
         ;;
     *) echo "Usage: $0 [sender|receiver]" >&2; exit 2 ;;
 esac
 app="$destination/$app_name.app"
 sdk="${OPEN_DISPLAY_MACOS_SDK:-/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk}"
-sparkle="$deps/sparkle-2.10.1/Sparkle.framework"
 cmake="$deps/cmake-3.31.8-macos-universal/CMake.app/Contents/bin/cmake"
 boringssl_revision=$(sed -n 's#.*codeload\.github\.com/google/boringssl/tar\.gz/\([a-f0-9]*\).*#\1#p' Pairing/CMakeLists.txt)
 boringssl="$deps/boringssl-$boringssl_revision"
 arch="${OPEN_DISPLAY_DEV_ARCH:-$(uname -m)}"
 
-for input in "$sdk/SDKSettings.plist" "$cmake" "$sparkle/Sparkle" "$boringssl/CMakeLists.txt"; do
+for input in "$sdk/SDKSettings.plist" "$cmake" "$boringssl/CMakeLists.txt"; do
     if [[ ! -e "$input" ]]; then
         printf 'Missing macOS development dependency: %s\n' "$input" >&2
         exit 1
@@ -47,7 +46,7 @@ stage=$(mktemp -d "$derived/package.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
 bundle="$stage/$app_name.app"
 contents="$bundle/Contents"
-mkdir -p "$contents/"{MacOS,Frameworks,Resources}
+mkdir -p "$contents/"{MacOS,Resources}
 
 minimum=$(ruby -ryaml -e 'puts YAML.load_file("project.yml").fetch("targets").fetch(ARGV.fetch(0)).fetch("deploymentTarget")' "$scheme")
 pairing="$derived/lan-pairing-$arch"
@@ -56,7 +55,6 @@ pairing="$derived/lan-pairing-$arch"
     "-DCMAKE_OSX_DEPLOYMENT_TARGET=$minimum" "-DFETCHCONTENT_SOURCE_DIR_BORINGSSL=$boringssl"
 "$cmake" --build "$pairing" --target odpair --parallel 4
 
-ditto "$sparkle" "$contents/Frameworks/Sparkle.framework"
 ruby -ryaml -rjson -e '
     project = YAML.load_file("project.yml")
     target = project.fetch("targets").fetch(ARGV.fetch(0))
@@ -73,10 +71,7 @@ ruby -ryaml -rjson -e '
       "CFBundleIconFile" => "AppIcon",
       "CFBundleShortVersionString" => ENV.fetch("OPEN_DISPLAY_DEV_VERSION", settings.fetch("MARKETING_VERSION")),
       "CFBundleVersion" => ENV.fetch("OPEN_DISPLAY_DEV_BUILD_NUMBER", settings.fetch("CURRENT_PROJECT_VERSION")),
-      "LSMinimumSystemVersion" => target.fetch("deploymentTarget"),
-      "SUFeedURL" => ENV.fetch("OPEN_DISPLAY_DEV_UPDATE_FEED", ""),
-      "SUPublicEDKey" => ENV.fetch("OPEN_DISPLAY_DEV_UPDATE_PUBLIC_KEY", ""),
-      "SUEnableAutomaticChecks" => false
+      "LSMinimumSystemVersion" => target.fetch("deploymentTarget")
     )
     puts JSON.generate(info)
 ' "$scheme" > "$stage/Info.json"
@@ -97,9 +92,9 @@ fi
 
 if ! xcrun swiftc -sdk "$sdk" -swift-version 5 -D DEBUG -target "$arch-apple-macosx$minimum" \
     -module-name "$scheme" -module-cache-path "$derived/swift-cache" \
-    -F "$contents/Frameworks" -I Pairing/include -import-objc-header Mac/OpenSidecarMac-Bridging-Header.h \
+    -I Pairing/include -import-objc-header Mac/OpenSidecarMac-Bridging-Header.h \
     "${sources[@]}" Shared/*.swift "$pairing/libodpair.a" "$pairing/_deps/boringssl-build/libcrypto.a" \
-    -lc++ -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+    -lc++ \
     -o "$contents/MacOS/$app_name" > "$derived/swift.log" 2>&1; then
     cat "$derived/swift.log" >&2
     exit 1

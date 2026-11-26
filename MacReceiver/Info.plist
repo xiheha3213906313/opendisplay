@@ -32,19 +32,5 @@
 	<string>OpenDisplay Receiver advertises itself on the local network so another Mac can connect and use this Mac as a display.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
-	<key>SUEnableAutomaticChecks</key>
-	<true/>
-	<key>SUAllowsAutomaticUpdates</key>
-	<false/>
-	<key>SUFeedURL</key>
-	<string>$(OPEN_DISPLAY_SPARKLE_FEED_URL)</string>
-	<key>SUPublicEDKey</key>
-	<string>$(OPEN_DISPLAY_SPARKLE_PUBLIC_KEY)</string>
-	<key>SUVerifyUpdateBeforeExtraction</key>
-	<true/>
-	<key>SURequireSignedFeed</key>
-	<true/>
-	<key>SUSignedFeedFailureExpirationInterval</key>
-	<integer>0</integer>
 </dict>
 </plist>
