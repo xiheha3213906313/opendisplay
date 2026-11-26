@@ -92,6 +92,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private var connection: NWConnection?
     private var virtualDisplay: VirtualDisplay?
     private let queue: DispatchQueue
+    private let manualReceiverBrowse: LocalBonjour?
+    private var rejectedLocalReceiver = false
     private let startCode: [UInt8] = [0, 0, 0, 1]
 
     // Audio negotiation, capture and sends are ordered on the connection queue.
@@ -407,8 +409,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     init(transport: SenderTransport, name: String, mode: CaptureMode,
          quality: StreamQuality = .best, displaySerial: UInt32 = 0x0001,
          identityOffset: UInt32 = 0, awaitingWake: Bool = false,
+         manualReceiverBrowse: LocalBonjour? = nil,
          queue: DispatchQueue = DispatchQueue(label: "sender.video")) {
         self.queue = queue
+        self.manualReceiverBrowse = manualReceiverBrowse
         self.transport = transport
         self.endpointName = name
         self.mode = mode
@@ -438,6 +442,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             while !CGPreflightScreenCaptureAccess() {
                 try await Task.sleep(for: .seconds(2))
                 if stopped { return }
+                let localReceiver = await withCheckedContinuation { continuation in
+                    queue.async { continuation.resume(returning: self.rejectedLocalReceiver) }
+                }
+                if localReceiver { throw Self.localReceiverError }
             }
             Log.info("Screen Recording permission granted")
         }
@@ -1760,7 +1768,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private var connectionGeneration: UInt64 = 0
 
     private func connect() {
-        guard !stopped else { return }
+        guard !stopped, !rejectedLocalReceiver else { return }
         switch transport {
         case .tcp(let endpoint): connectTCP(endpoint)
         case .secure(let conn, _):
@@ -1776,6 +1784,13 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     /// Bookkeeping shared by both transports once a connection is live.
     private func becomeReady(_ conn: NWConnection) {
+        if case .tcp = transport, LocalNetworkDevice.contains(conn) {
+            guard manualReceiverBrowse != nil,
+                  LocalNetworkDevice.isLoopback(conn.currentPath?.remoteEndpoint ?? conn.endpoint) else {
+                rejectLocalReceiver(conn)
+                return
+            }
+        }
         if case .tcp = transport,
            conn.currentPath?.usesInterfaceType(.loopback) != true,
            !DirectCable.carries(conn) {
@@ -1939,6 +1954,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         }
         candidates.append(contentsOf: linkLocal)
+        candidates.removeAll { LocalNetworkDevice.contains(.hostPort(host: $0, port: 9000)) }
         guard !candidates.isEmpty else { return }
         // Log a round only when its candidate set differs from the last
         // logged one: the first round of a session and every cable-plug
@@ -1966,10 +1982,10 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 guard let self, self.upgradeProbes.contains(where: { $0 === probe }) else { return }
                 switch state {
                 case .ready:
-                    if let path = probe.currentPath, !path.usesInterfaceType(.wifi) {
+                    if let path = probe.currentPath, !path.usesInterfaceType(.wifi), !LocalNetworkDevice.contains(probe) {
                         self.migrate(to: probe)
                     } else {
-                        self.probeOutcomes.append("\(host) ready over WiFi")
+                        self.probeOutcomes.append("\(host) ready over an ineligible path")
                         self.upgradeProbes.removeAll { $0 === probe }
                         probe.cancel()
                     }
@@ -2081,6 +2097,11 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private func connectTCP(_ endpoint: NWEndpoint) {
+        if LocalNetworkDevice.contains(endpoint),
+           manualReceiverBrowse == nil || !LocalNetworkDevice.isLoopback(endpoint) {
+            rejectLocalReceiver(nil)
+            return
+        }
         let options = NWProtocolTCP.Options()
         options.noDelay = true   // latency matters more than throughput here
         // No interface steering: macOS already ranks a Thunderbolt Bridge or
@@ -2113,7 +2134,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             self.scheduleReconnect()
         }
         conn.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
+            guard let self, self.connection === conn else { return }
             switch state {
             case .ready:
                 self.becomeReady(conn)
@@ -2246,7 +2267,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private func scheduleReconnect() {
-        guard !stopped else { return }
+        guard !stopped, !rejectedLocalReceiver else { return }
         resetAudioLink(transportLost: true)
         if everConnected {
             if let since = disconnectedSince {
@@ -2692,6 +2713,15 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         case "hello":
             if let info = try? JSONDecoder().decode(PhoneInfo.self, from: payload) {
+                // An explicit loopback TCP dial may be an ADB or SSH relay.
+                // Only reject it when the Mac receiver is registered here.
+                if info.device == "Mac", let conn = connection, case .tcp = transport,
+                   LocalNetworkDevice.isLoopback(conn.currentPath?.remoteEndpoint ?? conn.endpoint),
+                   case .hostPort(_, let port) = conn.endpoint,
+                   manualReceiverBrowse?.containsReceiver(id: info.id, port: port.rawValue) == true {
+                    rejectLocalReceiver(conn)
+                    return
+                }
                 if case .secure(_, let id) = transport, info.id?.lowercased() != id {
                     connection?.cancel()
                     reportGone("The authenticated receiver announced a different installation ID")
@@ -2847,16 +2877,33 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private func waitForHello() async throws -> PhoneInfo {
-        if let lastHello { return lastHello }
-        return try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { continuation in
             queue.async {
-                if let hello = self.lastHello {
+                if self.rejectedLocalReceiver {
+                    continuation.resume(throwing: Self.localReceiverError)
+                } else if let hello = self.lastHello {
                     continuation.resume(returning: hello)
                 } else {
                     self.helloContinuation = continuation
                 }
             }
         }
+    }
+
+    private static var localReceiverError: NSError {
+        NSError(domain: "MacSender", code: 2,
+                userInfo: [NSLocalizedDescriptionKey: String(localized: "Cannot connect to this device")])
+    }
+
+    private func rejectLocalReceiver(_ conn: NWConnection?) {
+        rejectedLocalReceiver = true
+        connectionReady = false
+        conn?.cancel()
+        connection = nil
+        Log.info("Ignoring a connection to a receiver on this Mac")
+        helloContinuation?.resume(throwing: Self.localReceiverError)
+        helloContinuation = nil
+        if lastHello != nil { reportGone(Self.localReceiverError.localizedDescription) }
     }
 
     // MARK: - Encoder setup

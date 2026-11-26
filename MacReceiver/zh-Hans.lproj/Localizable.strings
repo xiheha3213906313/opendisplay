@@ -4,6 +4,7 @@
 "Bring the video window back if you closed it — the stream keeps running either way." = "重新打开视频窗口。关闭窗口后，画面仍持续传输。";
 "Cable" = "有线";
 "Cancel" = "取消";
+"Cannot connect to this device" = "不能连接本机";
 "Check for Updates…" = "检查更新…";
 "Close" = "关闭";
 "Closed" = "已关闭";

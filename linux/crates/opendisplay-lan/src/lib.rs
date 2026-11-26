@@ -5,7 +5,7 @@ use std::{
     ffi::{CStr, CString, c_char, c_int, c_void},
     fs::{self, OpenOptions},
     io::Write,
-    net::SocketAddr,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::Arc,
@@ -42,6 +42,71 @@ pub struct Peer {
     pub id: Uuid,
     pub name: String,
     pub address: SocketAddr,
+}
+
+#[derive(Default)]
+pub struct LocalAddresses(HashSet<(IpAddr, u32)>);
+
+impl LocalAddresses {
+    pub fn current() -> Self {
+        let mut entries = std::ptr::null_mut();
+        let mut addresses = Self::default();
+        // getifaddrs owns the list until freeifaddrs; check the family before
+        // reading an address as sockaddr_in or sockaddr_in6.
+        unsafe {
+            if libc::getifaddrs(&mut entries) != 0 {
+                return addresses;
+            }
+            let mut next = entries;
+            while let Some(entry) = next.as_ref() {
+                if let Some(addr) = entry.ifa_addr.as_ref() {
+                    match i32::from(addr.sa_family) {
+                        libc::AF_INET => {
+                            let addr = &*entry.ifa_addr.cast::<libc::sockaddr_in>();
+                            let ip = Ipv4Addr::from(addr.sin_addr.s_addr.to_ne_bytes());
+                            addresses.0.insert((ip.into(), 0));
+                        }
+                        libc::AF_INET6 => {
+                            let addr = &*entry.ifa_addr.cast::<libc::sockaddr_in6>();
+                            let ip = Ipv6Addr::from(addr.sin6_addr.s6_addr);
+                            let scope = if ip.is_unicast_link_local() {
+                                libc::if_nametoindex(entry.ifa_name)
+                            } else {
+                                0
+                            };
+                            addresses.0.insert((ip.into(), scope));
+                        }
+                        _ => {}
+                    }
+                }
+                next = entry.ifa_next;
+            }
+            libc::freeifaddrs(entries);
+        }
+        addresses
+    }
+
+    pub fn contains(&self, address: SocketAddr) -> bool {
+        let ip = address.ip().to_canonical();
+        let scope = match address {
+            SocketAddr::V6(addr) if addr.ip().is_unicast_link_local() => addr.scope_id(),
+            _ => 0,
+        };
+        ip.is_loopback()
+            || self.0.iter().any(|&(local, local_scope)| {
+                ip == local.to_canonical() && (scope == 0 || scope == local_scope)
+            })
+    }
+}
+
+fn ensure_remote(tcp: &TcpStream) -> Result<()> {
+    let peer = tcp.peer_addr()?;
+    if peer.ip().to_canonical() == tcp.local_addr()?.ip().to_canonical()
+        || LocalAddresses::current().contains(peer)
+    {
+        bail!("cannot connect to this device");
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -288,6 +353,16 @@ impl Endpoint {
         inspect: Inspect,
         prompt: Prompt,
     ) -> Result<Authenticated> {
+        ensure_remote(&tcp)?;
+        self.accept_tls(tcp, inspect, prompt).await
+    }
+
+    async fn accept_tls(
+        &self,
+        tcp: TcpStream,
+        inspect: Inspect,
+        prompt: Prompt,
+    ) -> Result<Authenticated> {
         tcp.set_nodelay(true)?;
         let tls = timeout(Duration::from_secs(5), self.server.accept(tcp)).await??;
         self.authenticate(tls.into(), Intent::Incoming, None, inspect, prompt)
@@ -302,7 +377,23 @@ impl Endpoint {
         inspect: Inspect,
         prompt: Prompt,
     ) -> Result<Authenticated> {
+        if expected == Some(self.id) || LocalAddresses::current().contains(addr) {
+            bail!("cannot connect to this device");
+        }
         let tcp = timeout(Duration::from_secs(5), TcpStream::connect(addr)).await??;
+        ensure_remote(&tcp)?;
+        self.connect_tls(tcp, expected, intent, inspect, prompt)
+            .await
+    }
+
+    async fn connect_tls(
+        &self,
+        tcp: TcpStream,
+        expected: Option<Uuid>,
+        intent: Intent,
+        inspect: Inspect,
+        prompt: Prompt,
+    ) -> Result<Authenticated> {
         tcp.set_nodelay(true)?;
         let tls = timeout(
             Duration::from_secs(5),
@@ -601,14 +692,20 @@ pub async fn browse(
                     let Some(id) = info.get_property_val_str("id").and_then(|value| Uuid::parse_str(value).ok()) else { continue };
                     if info.get_property_val_str("auth") != Some("1") { continue; }
                     let port = info.get_port();
-                    let Some(address) = info.get_addresses().iter().filter_map(|address|
+                    let local = LocalAddresses::current();
+                    let address = info.get_addresses().iter().filter_map(|address|
                         address.to_string().parse::<std::net::IpAddr>().ok())
                         .filter(|address| !matches!(address, std::net::IpAddr::V6(v6) if v6.is_unicast_link_local()))
-                        .min_by_key(|address| address.is_ipv6()) else { continue; };
+                        .map(|address| SocketAddr::new(address, port))
+                        .filter(|address| !local.contains(*address))
+                        .min_by_key(|address| address.is_ipv6());
                     let fullname = info.get_fullname();
-                    let name = fullname.strip_suffix(service).unwrap_or(fullname).trim_end_matches('.');
-                    records.insert(fullname.to_string(), Peer { id, name: name.to_string(),
-                        address: SocketAddr::new(address, port) });
+                    if let Some(address) = address {
+                        let name = fullname.strip_suffix(service).unwrap_or(fullname).trim_end_matches('.');
+                        records.insert(fullname.to_string(), Peer { id, name: name.to_string(), address });
+                    } else {
+                        records.remove(fullname);
+                    }
                 }
                 ServiceEvent::ServiceRemoved(_, name) => { records.remove(&name); }
                 _ => continue,
@@ -665,6 +762,63 @@ mod tests {
     use super::*;
     use tokio::net::TcpListener;
 
+    #[test]
+    fn only_local_addresses_are_excluded() {
+        let local = LocalAddresses(HashSet::from([
+            ("192.168.10.4".parse().unwrap(), 0),
+            ("fe80::1234".parse().unwrap(), 7),
+        ]));
+        for address in [
+            "127.0.0.2:9000",
+            "[::1]:9000",
+            "[::ffff:127.0.0.1]:9000",
+            "192.168.10.4:9000",
+            "[::ffff:192.168.10.4]:9000",
+            "[fe80::1234%7]:9000",
+        ] {
+            assert!(local.contains(address.parse().unwrap()), "{address}");
+        }
+        for address in [
+            "192.168.10.5:9000",
+            "[fe80::1234%8]:9000",
+            "[2001:db8::1]:9000",
+        ] {
+            assert!(!local.contains(address.parse().unwrap()), "{address}");
+        }
+    }
+
+    #[tokio::test]
+    async fn production_lan_rejects_loopback_before_pairing() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let endpoint = Endpoint::with_store(
+            Role::Sender,
+            None,
+            "Computer".into(),
+            Store(directory.path().to_path_buf()),
+        )?;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let address = listener.local_addr()?;
+        let inspect: Inspect = Arc::new(|_, _| panic!("local connection reached pairing"));
+        let prompt: Prompt = Arc::new(|_, _| panic!("local connection requested a code"));
+        for intent in [Intent::Connect, Intent::Resume] {
+            let result = endpoint
+                .connect(address, None, intent, inspect.clone(), prompt.clone())
+                .await;
+            assert_eq!(
+                result.err().unwrap().to_string(),
+                "cannot connect to this device"
+            );
+        }
+        let (_client, (socket, _)) =
+            tokio::try_join!(TcpStream::connect(address), listener.accept())?;
+        let result = endpoint.accept(socket, inspect, prompt).await;
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "cannot connect to this device"
+        );
+        assert!(endpoint.store.pairs().is_empty());
+        Ok(())
+    }
     #[tokio::test(flavor = "multi_thread")]
     async fn receiver_initiates_and_resumes_with_tls() -> Result<()> {
         let sender_dir = tempfile::tempdir()?;
@@ -709,16 +863,21 @@ mod tests {
             let receiver_id = receiver.id();
             let allowed = Arc::new(move |id, request| id == receiver_id && request == intent);
             let (outbound, inbound) = tokio::try_join!(
-                receiver.connect(
-                    addr,
-                    Some(sender_id),
-                    intent,
-                    Arc::new(|_, _| true),
-                    show_code
-                ),
+                async {
+                    let socket = TcpStream::connect(addr).await?;
+                    receiver
+                        .connect_tls(
+                            socket,
+                            Some(sender_id),
+                            intent,
+                            Arc::new(|_, _| true),
+                            show_code,
+                        )
+                        .await
+                },
                 async {
                     let (socket, _) = listener.accept().await?;
-                    sender.accept(socket, allowed, read_code).await
+                    sender.accept_tls(socket, allowed, read_code).await
                 },
             )?;
             assert_eq!(outbound.id, sender_id);
