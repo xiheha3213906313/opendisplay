@@ -263,6 +263,8 @@ final class SenderController: ObservableObject {
         didSet { UserDefaults.standard.set(Array(resumeLAN), forKey: "lan.resumeReceivers") }
     }
     private var browser: NWBrowser?
+    private let localLegacyBonjour = LocalBonjour()
+    private var legacyBrowseResults: Set<NWBrowser.Result> = []
     /// Local Network access is off for this app. macOS has no API to ask,
     /// but a browse it blocks waits with a policy-denied error.
     @Published private(set) var localNetworkDenied = false
@@ -373,6 +375,8 @@ final class SenderController: ObservableObject {
 
     private func startBrowsing() {
         // TXT records carry the receiver's install id (new receivers).
+        localLegacyBonjour.changed = { [weak self] in self?.publishLegacyReceivers() }
+        localLegacyBonjour.start(type: "_opensidecar._tcp")
         let browser = NWBrowser(for: .bonjourWithTXTRecord(type: "_opensidecar._tcp", domain: nil), using: .tcp)
         browser.stateUpdateHandler = { [weak self, weak browser] state in
             DispatchQueue.main.async {
@@ -380,18 +384,23 @@ final class SenderController: ObservableObject {
                 self.browserStateChanged(state)
             }
         }
-        browser.browseResultsChangedHandler = { [weak self] results, _ in
+        browser.browseResultsChangedHandler = { [weak self, weak browser] results, _ in
             DispatchQueue.main.async {
-                guard let self else { return }
-                self.discovered = Array(results)
-                self.logDiscoveredReceivers()
-                self.endSessionsWhoseServiceVanished()
-                self.autoConnect()
-                self.connectNewlyCabled()
+                guard let self, let browser, self.browser === browser else { return }
+                self.legacyBrowseResults = results
+                self.publishLegacyReceivers()
             }
         }
         browser.start(queue: .main)
         self.browser = browser
+    }
+
+    private func publishLegacyReceivers() {
+        discovered = legacyBrowseResults.filter { !localLegacyBonjour.contains($0.endpoint, id: txtID(of: $0)) }
+        logDiscoveredReceivers()
+        endSessionsWhoseServiceVanished()
+        autoConnect()
+        connectNewlyCabled()
     }
 
     /// A browse that fails or is blocked shows no devices and logged nothing
@@ -570,7 +579,8 @@ final class SenderController: ObservableObject {
     }
 
     private func cableEndpoint(_ result: NWBrowser.Result) -> NWEndpoint? {
-        guard let interface = result.interfaces.first(where: DirectCable.isDirectLink),
+        guard !localLegacyBonjour.contains(result.endpoint, id: txtID(of: result)),
+              let interface = result.interfaces.first(where: DirectCable.isDirectLink),
               case let .service(name, type, domain, _) = result.endpoint else { return nil }
         return .service(name: name, type: type, domain: domain, interface: interface)
     }
@@ -965,6 +975,7 @@ final class SenderController: ObservableObject {
         }
 
         let transport: SenderTransport
+        var manualReceiverBrowse: LocalBonjour?
         switch target {
         case .usb(let udid):
             guard let portNum = UInt16(port) else { return }
@@ -972,6 +983,7 @@ final class SenderController: ObservableObject {
                 // Manual override: dial a plain TCP endpoint instead of usbmuxd.
                 transport = .tcp(.hostPort(host: NWEndpoint.Host(host),
                                            port: NWEndpoint.Port(rawValue: portNum)!))
+                manualReceiverBrowse = localLegacyBonjour
             } else {
                 transport = wiredTransport(udid: udid, port: portNum)
             }
@@ -996,6 +1008,7 @@ final class SenderController: ObservableObject {
                                quality: quality, displaySerial: Self.displaySerial(for: identityKey),
                                identityOffset: identityOffset(for: identityKey),
                                awaitingWake: awaitingWake,
+                               manualReceiverBrowse: manualReceiverBrowse,
                                queue: authenticated?.queue ?? DispatchQueue(label: "sender.video"))
         let session = DeviceSession(id: id, target: target, name: name, sender: sender,
                                     displayIdentityKey: identityKey)

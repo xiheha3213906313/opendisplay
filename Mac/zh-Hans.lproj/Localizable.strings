@@ -21,6 +21,7 @@
 "CGVirtualDisplay creation failed" = "无法创建虚拟显示器";
 "Cable" = "有线";
 "Cancel" = "取消";
+"Cannot connect to this device" = "不能连接本机";
 "Capture could not be restarted" = "无法重新启动屏幕捕获";
 "Capture stopped: %@" = "屏幕捕获已停止：%@";
 "Check for Updates…" = "检查更新…";

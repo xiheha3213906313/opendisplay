@@ -717,8 +717,16 @@ final class StreamReceiver: ObservableObject {
                 guard let self, self.pendingConnections.contains(where: { $0 === conn }) else { return }
                 switch state {
                 case .ready:
+                    let path = conn.currentPath
+                    // An explicit loopback relay can forward from another device.
+                    if self.deviceKind == "Mac", LocalNetworkDevice.contains(conn),
+                       !LocalNetworkDevice.isLoopback(path?.remoteEndpoint ?? conn.endpoint) {
+                        self.pendingConnections.removeAll { $0 === conn }
+                        conn.cancel()
+                        return
+                    }
                     let direct = self.deviceKind == "Mac" && DirectCable.carries(conn)
-                    let loopback = conn.currentPath?.usesInterfaceType(.loopback) == true
+                    let loopback = path?.usesInterfaceType(.loopback) == true
                     guard direct || loopback else {
                         self.pendingConnections.removeAll { $0 === conn }
                         self.setStatus(String(localized: "Update OpenDisplay on the computer to connect over Wi-Fi."))

@@ -1,7 +1,9 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::Result;
-use opendisplay_lan::{Authenticated, Endpoint, Intent, Peer, Prompt, Role, SENDER_SERVICE};
+use opendisplay_lan::{
+    Authenticated, Endpoint, Intent, LocalAddresses, Peer, Prompt, Role, SENDER_SERVICE,
+};
 use tokio::{
     net::TcpStream,
     sync::{mpsc, watch},
@@ -86,6 +88,9 @@ impl LanReceiver {
     }
 
     pub fn accept(&mut self, tcp: TcpStream, addr: SocketAddr) {
+        if LocalAddresses::current().contains(addr) {
+            return;
+        }
         if !self.attempts.is_empty() {
             if !self.outgoing {
                 return;
@@ -109,7 +114,10 @@ impl LanReceiver {
     }
 
     pub fn connect(&mut self, peer: Peer, intent: Intent) {
-        if !self.attempts.is_empty() {
+        if !self.attempts.is_empty()
+            || peer.id == self.endpoint.id()
+            || LocalAddresses::current().contains(peer.address)
+        {
             return;
         }
         self.outgoing = true;

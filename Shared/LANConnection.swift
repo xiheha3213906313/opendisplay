@@ -255,6 +255,8 @@ final class LANService: ObservableObject {
     private var name: String
     private var listener: NWListener?
     private var browser: NWBrowser?
+    private let localBonjour = LocalBonjour()
+    private var browseResults: Set<NWBrowser.Result> = []
     @Published private var listenerFailed = false
     private var browserFailed = false
     private let queue: DispatchQueue
@@ -315,6 +317,8 @@ final class LANService: ObservableObject {
     }
 
     private func startBrowser() {
+        localBonjour.changed = { [weak self] in self?.publishPeers() }
+        localBonjour.start(type: role.peer.serviceType)
         let browser = NWBrowser(for: .bonjourWithTXTRecord(type: role.peer.serviceType, domain: nil), using: .tcp)
         self.browser = browser
         browserFailed = false
@@ -334,14 +338,22 @@ final class LANService: ObservableObject {
         browser.browseResultsChangedHandler = { [weak self, weak browser] results, _ in
             Task { @MainActor in
                 guard let self, let browser, self.browser === browser else { return }
-                var seen = Set<String>()
-                self.peers = results.compactMap(LANPeer.from)
-                    .sorted { ($0.name, $0.id) < ($1.name, $1.id) }
-                    .filter { seen.insert($0.id).inserted }
-                self.onPeersChanged?()
+                self.browseResults = results
+                self.publishPeers()
             }
         }
         browser.start(queue: queue)
+    }
+
+    private func publishPeers() {
+        var seen = Set<String>()
+        let visible = browseResults.compactMap(LANPeer.from)
+            .filter { $0.id != id && !localBonjour.contains($0.endpoint, id: $0.id) }
+            .sorted { ($0.name, $0.id) < ($1.name, $1.id) }
+            .filter { seen.insert($0.id).inserted }
+        guard visible != peers else { return }
+        peers = visible
+        onPeersChanged?()
     }
 
     private static func isPolicyDenied(_ error: NWError) -> Bool {
@@ -367,6 +379,8 @@ final class LANService: ObservableObject {
         listener = nil
         browser?.cancel()
         browser = nil
+        localBonjour.stop()
+        browseResults = []
         listenerDenied = false
         browserDenied = false
         listenerFailed = false
@@ -388,6 +402,10 @@ final class LANService: ObservableObject {
     }
 
     func connect(to peer: LANPeer, request: LANRequest) {
+        guard peer.id != id, !localBonjour.contains(peer.endpoint, id: peer.id) else {
+            if request == .manual { connectionMessage = String(localized: "Cannot connect to this device") }
+            return
+        }
         guard !candidates.values.contains(where: { $0.id == peer.id }),
               let parameters = LANTLS.parameters(server: false, queue: queue) else { return }
         start(NWConnection(to: peer.endpoint, using: parameters), request: request, expected: peer.id)
@@ -425,7 +443,13 @@ final class LANService: ObservableObject {
             Task { @MainActor in
                 guard let self, self.candidates[token] != nil else { return }
                 switch state {
-                case .ready: self.authenticate(token, request: request)
+                case .ready:
+                    if LocalNetworkDevice.contains(connection) {
+                        if request == .manual { self.connectionMessage = String(localized: "Cannot connect to this device") }
+                        self.cancel(token)
+                        return
+                    }
+                    self.authenticate(token, request: request)
                 case .waiting(let error):
                     Log.info("LAN TLS waiting: \(error)")
                 case .failed(let error):

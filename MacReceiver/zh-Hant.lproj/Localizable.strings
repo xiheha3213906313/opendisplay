@@ -4,6 +4,7 @@
 "Bring the video window back if you closed it — the stream keeps running either way." = "重新開啟影片視窗。關閉視窗後，畫面仍持續傳輸。";
 "Cable" = "有線";
 "Cancel" = "取消";
+"Cannot connect to this device" = "無法連線至本機";
 "Check for Updates…" = "檢查更新…";
 "OpenDisplay %@ is available" = "OpenDisplay %@ 有新版本";
 "Download the disk image and open it to install the update." = "請下載並開啟磁碟映像來安裝更新。";

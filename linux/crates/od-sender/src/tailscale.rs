@@ -197,6 +197,8 @@ pub fn discover() -> Option<(Vec<Found>, usize)> {
             return None;
         }
     };
+    let local = opendisplay_lan::LocalAddresses::current();
+    peers.retain(|peer| !local.contains(SocketAddr::new(peer.ip, DEFAULT_PORT)));
     if peers.is_empty() {
         debug!("tailscale: no online peers");
         return None;

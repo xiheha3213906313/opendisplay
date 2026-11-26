@@ -15,7 +15,11 @@ import org.conscrypt.Conscrypt
 import java.io.ByteArrayInputStream
 import java.io.DataInputStream
 import java.io.IOException
+import java.net.Inet6Address
+import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
+import java.net.SocketException
 import java.security.KeyFactory
 import java.security.KeyStore
 import java.security.cert.CertificateFactory
@@ -31,6 +35,19 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLServerSocket
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.X509TrustManager
+
+internal fun isLocalLanAddress(address: InetAddress): Boolean {
+    if (address.isLoopbackAddress) return true
+    return try {
+        if (address is Inet6Address && address.scopeId != 0) {
+            NetworkInterface.getByIndex(address.scopeId)?.inetAddresses?.toList()?.contains(address) == true
+        } else {
+            NetworkInterface.getByInetAddress(address) != null
+        }
+    } catch (_: SocketException) {
+        false
+    }
+}
 
 internal object LANPairing {
     init { System.loadLibrary("odpair_jni") }
@@ -131,6 +148,10 @@ internal class LANReceiver(
             try {
                 while (generation == epoch) {
                     val client = socket.accept() as SSLSocket
+                    if (client.inetAddress == client.localAddress || isLocalLanAddress(client.inetAddress)) {
+                        client.close()
+                        continue
+                    }
                     handler.post {
                         if (listener === socket) startCandidate(client, null, 0) else client.close()
                     }
@@ -217,10 +238,14 @@ internal class LANReceiver(
                     if (resolved != null && host != null && version == "1" && peerID != null &&
                         runCatching { UUID.fromString(peerID).toString() == peerID }.getOrDefault(false) &&
                         resolved.serviceName in foundNames) {
-                        choices[resolved.serviceName] = Peer(peerID, resolved.serviceName,
-                            InetSocketAddress(host, resolved.port))
-                        changed()
-                        tryResume()
+                        if (peerID == id || isLocalLanAddress(host)) {
+                            if (choices.remove(resolved.serviceName) != null) changed()
+                        } else {
+                            choices[resolved.serviceName] = Peer(peerID, resolved.serviceName,
+                                InetSocketAddress(host, resolved.port))
+                            changed()
+                            tryResume()
+                        }
                     }
                     resolveNext()
                 }
@@ -234,7 +259,8 @@ internal class LANReceiver(
     fun connect(peer: Peer) = dial(peer, 1)
 
     private fun dial(peer: Peer, request: Int) {
-        if (listener == null || server.isConnected || candidates.any { it.peerId == peer.id }) return
+        if (listener == null || server.isConnected || peer.id == id || isLocalLanAddress(peer.address.address) ||
+            candidates.any { it.peerId == peer.id }) return
         val client = runCatching { tls.socketFactory.createSocket() as SSLSocket }.getOrNull() ?: return
         startCandidate(client, peer, request)
     }
@@ -342,6 +368,7 @@ internal class LANReceiver(
             val secret = ByteArray(32)
             try {
                 if (peer != null) socket.connect(peer.address, 5000)
+                if (socket.inetAddress == socket.localAddress || isLocalLanAddress(socket.inetAddress)) return
                 socket.useClientMode = peer != null
                 socket.enabledProtocols = arrayOf("TLSv1.3")
                 socket.soTimeout = 5000
@@ -409,7 +436,7 @@ internal class LANReceiver(
 
         @Keep fun inspectPairing(id: String, name: ByteArray, request: Int): Boolean {
             synchronized(candidates) {
-                if (cancelled || generation != epoch || server.isConnected ||
+                if (id == this@LANReceiver.id || cancelled || generation != epoch || server.isConnected ||
                     (peerId != null && peerId != id) ||
                     (request == 2 && prefs.getString("resume", null) != id)) return false
                 val twin = candidates.firstOrNull { it !== this && it.peerId == id && !it.cancelled }

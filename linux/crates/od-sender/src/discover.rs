@@ -141,12 +141,15 @@ fn browse(
                     .trim_end_matches(&format!(".{ty}"))
                     .to_string();
                 // Prefer IPv4: link-local IPv6 needs a scope id we do not have (§6.1 addrs note).
-                let ip = info
+                let local = opendisplay_lan::LocalAddresses::current();
+                let addr = info
                     .get_addresses()
                     .iter()
                     .map(|a| a.to_ip_addr())
-                    .min_by_key(|a| if a.is_ipv4() { 0 } else { 1 });
-                let Some(ip) = ip else { continue };
+                    .map(|ip| SocketAddr::new(ip, info.get_port()))
+                    .filter(|addr| !local.contains(*addr))
+                    .min_by_key(|addr| addr.is_ipv6());
+                let Some(addr) = addr else { continue };
                 let id = info.get_property_val_str("id").map(str::to_owned);
                 let pv = info
                     .get_property_val_str("pv")
@@ -154,7 +157,7 @@ fn browse(
                     .unwrap_or(1);
                 let found = Found {
                     instance,
-                    addr: SocketAddr::new(ip, info.get_port()),
+                    addr,
                     id,
                     pv,
                 };
