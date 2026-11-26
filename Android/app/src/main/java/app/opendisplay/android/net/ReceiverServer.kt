@@ -123,7 +123,7 @@ class ReceiverServer(
     val isConnected: Boolean get() = synchronized(lock) { current?.isOpen == true }
 
     val isOnAccessory: Boolean
-        get() = synchronized(lock) { current?.takeIf { it.isOpen }?.link is AccessoryLink }
+        get() = synchronized(lock) { current?.takeIf { it.isOpen }?.isAccessory == true }
 
     // region Accept and adopt
 
@@ -158,7 +158,7 @@ class ReceiverServer(
                         closeQuietly(socket)
                         listener.onLegacyWifi()
                     } else {
-                        onAccepted(socket)
+                        onAccepted(socket, gen)
                     }
                 }
             } catch (e: IOException) {
@@ -169,23 +169,30 @@ class ReceiverServer(
         }
     }
 
-    private fun onAccepted(socket: Socket) {
+    private fun onAccepted(socket: Socket, gen: Int) {
         Log.i(TAG, "connection from ${socket.remoteSocketAddress}")
-        val live = synchronized(lock) { current?.takeIf { it.isOpen } }
-        if (live == null) {
-            adopt(SocketLink(socket), null)
+        val needsProof = synchronized(lock) {
+            // This socket serves adb forwards. A physical USB accessory
+            // already has its own link and takes priority over loopback.
+            if (!live(gen) || isOnAccessory) {
+                closeQuietly(socket)
+                return
+            }
+            val connected = current?.isOpen == true
+            if (connected) candidates.add(socket)
+            connected
+        }
+        if (!needsProof) {
+            adopt(SocketLink(socket), null) { live(gen) && !isOnAccessory }
             return
         }
-        // A Bonjour dial races IPv4 and IPv6 and the sender cancels the loser
-        // within milliseconds; adopting every newcomer evicted the winner.
-        // So a newcomer must prove itself with bytes first (iOS receiver
-        // behavior). Its provisional hello carries no cursorPort, so its UDP
-        // flow cannot start before it owns the session.
-        synchronized(lock) { candidates.add(socket) }
-        Thread({ proveCandidate(socket) }, "od-candidate").apply { isDaemon = true }.start()
+        // Give a concurrent loopback dial a provisional hello, then wait for
+        // data so an abandoned dial cannot replace the established socket.
+        // Its UDP flow cannot start until it gets a hello with cursorPort.
+        Thread({ proveCandidate(socket, gen) }, "od-candidate").apply { isDaemon = true }.start()
     }
 
-    private fun proveCandidate(socket: Socket) {
+    private fun proveCandidate(socket: Socket, gen: Int) {
         try {
             socket.getOutputStream().apply {
                 write(Framing.encode(Messages.bytes(helloFactory(null))))
@@ -195,11 +202,12 @@ class ReceiverServer(
             val buf = ByteArray(64 * 1024)
             val n = socket.getInputStream().read(buf)
             socket.soTimeout = 0
-            val stillCandidate = synchronized(lock) { candidates.remove(socket) }
-            if (n > 0 && stillCandidate && running) {
-                Log.i(TAG, "newcomer proved itself; adopting it as the session")
-                adopt(SocketLink(socket), buf.copyOf(n))
+            if (n > 0) {
+                adopt(SocketLink(socket), buf.copyOf(n)) {
+                    candidates.remove(socket) && live(gen) && !isOnAccessory
+                }
             } else {
+                synchronized(lock) { candidates.remove(socket) }
                 Log.i(TAG, "dropped a newcomer that sent nothing")
                 closeQuietly(socket)
             }
@@ -217,22 +225,24 @@ class ReceiverServer(
      */
     internal fun adoptAccessory(link: Link): Boolean {
         Log.i(TAG, "connection from ${link.remote}")
-        return adopt(link, null)
+        return adopt(link, null, isAccessory = true)
     }
 
     fun adoptSecure(socket: Socket, beforeAdopt: () -> Boolean): Boolean =
-        adopt(SocketLink(socket, authenticated = true), null, beforeAdopt)
+        adopt(SocketLink(socket, authenticated = true), null) {
+            current?.isOpen != true && beforeAdopt()
+        }
 
     fun disconnect() {
         synchronized(lock) { current }?.closeAfter(Messages.simple("sessionDisconnect"))
     }
 
-    private fun adopt(link: Link, initial: ByteArray?, beforeAdopt: (() -> Boolean)? = null): Boolean {
-        val session = Session(link, initial)
+    private fun adopt(link: Link, initial: ByteArray?, isAccessory: Boolean = false,
+                      beforeAdopt: (() -> Boolean)? = null): Boolean {
+        val session = Session(link, initial, isAccessory)
         val old: Session?
         synchronized(lock) {
-            if (!running || (beforeAdopt != null &&
-                    (current?.isOpen == true || !beforeAdopt()))) {
+            if (!running || beforeAdopt?.invoke() == false) {
                 closeQuietly(link)
                 return false
             }
@@ -412,7 +422,7 @@ class ReceiverServer(
 
     // endregion
 
-    private inner class Session(val link: Link, private val initial: ByteArray?) {
+    private inner class Session(val link: Link, private val initial: ByteArray?, val isAccessory: Boolean) {
         private val outbox = LinkedBlockingQueue<ByteArray>()
         private val audioLock = Any()
         private var audioID: String? = null
