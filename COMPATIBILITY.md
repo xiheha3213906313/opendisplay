@@ -32,13 +32,11 @@ We cut Mac and iOS from one release tag, but distribution is not simultaneous:
 
 | | Update channel | Time to reach a user |
 |---|---|---|
-| **Mac** | Sparkle appcast (`opendisplay.app/appcast.xml`) | hours — auto, silent |
+| **Mac** | Installers on `main` (`downloads/macos/`) | when the user installs the update |
 | **iOS** | App Store (review + user tapping Update) | days → weeks, with a **long tail** |
 
-So at any moment the field holds many version pairings. The dominant one is
-**new Mac + old iPhone** (Mac raced ahead via Sparkle). But the reverse also
-happens: iOS auto-update is on for most users, so a phone can jump to a build
-whose Mac counterpart the user hasn't installed yet — **new iPhone + old Mac**.
+Users can upgrade either device first. Both **new Mac + old iPhone** and
+**new iPhone + old Mac** must work during a release rollout.
 
 Concretely, roughly half the iOS base sat on an _older_ release than the latest
 at the time of writing (~2.5k users per version). We cannot assume the two ends
@@ -49,7 +47,7 @@ are in lockstep, ever.
 Keep these separate — conflating them is the trap:
 
 - **App version** (`MARKETING_VERSION`, e.g. `0.11.0`) — what users see, tied to
-  the App Store / Sparkle release. Bumped every release.
+  the App Store version and Mac installers. Bumped every release.
 - **Protocol version** (`pv`, an integer) — the wire contract between the apps.
   Bumped **only when the wire changes**, not every release. A release that only
   touches UI leaves `pv` untouched, so it never triggers a compatibility event.
@@ -113,8 +111,8 @@ direction and owns the offline/never-connect case.
 
 ## 5. The remote-config force lever (iOS) — issue #135
 
-Connection-independent. On launch the iPhone fetches a small static file we host
-next to the Sparkle appcast:
+Connection-independent. On launch the iPhone fetches a small static file served
+by GitHub Pages:
 
 - **URL:** `https://opendisplay.app/ios-version.json` (source of truth:
   `public/ios-version.json`; Vite copies it into `docs/` and Pages serves it).
@@ -135,7 +133,7 @@ next to the Sparkle appcast:
 - **`hardMinimumVersion` is the force floor: hand-edited via PR, deliberately and
   rarely.** It must _not_ auto-track "latest" or every release would force an
   update (the opposite of what we want). `recommendedVersion` may be
-  CI-auto-stamped, like the appcast.
+  CI-auto-stamped.
 - **Fails open:** any network/parse error, or a dormant `0.0.0` floor, shows no
   gate — a Pages outage can never brick the app. Dev builds (`0.0.0`) skip the
   check entirely.
@@ -178,7 +176,7 @@ old fields and the fallback.
 
 | Sender | Receiver | `panel` | Result in release N |
 |---|---|---|---|
-| new | released Mac receiver | absent | previous behaviour (a 1x Mac still gets the old 2x desktop until Sparkle updates it) |
+| new | released Mac receiver | absent | previous behaviour (a 1x Mac still gets the old 2x desktop until its receiver is updated) |
 | released | new Mac receiver | ignored | previous behaviour: the old fields are unchanged |
 | new | released iOS | absent | same desktop: the old formula is the new one for every iOS device |
 | released | new iOS | ignored | identical |

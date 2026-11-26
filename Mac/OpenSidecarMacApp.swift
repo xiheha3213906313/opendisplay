@@ -2,7 +2,6 @@ import SwiftUI
 import Network
 import Combine
 import CoreGraphics
-import Sparkle
 
 /// How the app presents itself. One bundle, switched at runtime via the
 /// activation policy — like Raycast/Hammerspoon style background agents.
@@ -28,7 +27,7 @@ struct OpenSidecarMacApp: App {
             get: { controller.presentation == .menuBar },
             set: { _ in }
         )) {
-            ContentView(controller: controller, updater: appDelegate.updater)
+            ContentView(controller: controller)
         } label: {
             Image(systemName: controller.running
                   ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
@@ -42,12 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         VirtualAudioOutputs.shared.shutdown()
     }
 
-    @MainActor private(set) lazy var updater = ApplicationUpdates.makeController()
-
     @MainActor func applicationDidFinishLaunching(_ notification: Notification) {
-        // Hand the updater to the control window, which is built outside the
-        // SwiftUI App scene (NSHostingView), so it can offer the same button.
-        MainWindow.updater = updater
         let presentation = SenderController.shared.presentation
         NSApp.setActivationPolicy(presentation == .dock ? .regular : .accessory)
         let defaults = UserDefaults.standard
@@ -71,9 +65,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 enum MainWindow {
     private static var window: NSWindow?
-    // Set once at launch by AppDelegate so the control window can share the
-    // app's single Sparkle updater.
-    static var updater: SPUStandardUpdaterController?
 
     static func show(prioritizePermissions: Bool = false) {
         if window == nil {
@@ -84,7 +75,6 @@ enum MainWindow {
             w.title = "OpenDisplay"
             w.contentView = NSHostingView(
                 rootView: ContentView(controller: SenderController.shared,
-                                      updater: updater,
                                       prioritizePermissions: prioritizePermissions))
             w.isReleasedWhenClosed = false
             w.center()
@@ -1512,9 +1502,6 @@ struct ContentView: View {
     @ObservedObject var controller: SenderController
     @ObservedObject private var permissions = PermissionMonitor.shared
     @State private var settingsUnavailable = false
-    // Optional so the view still compiles/previews without an updater (e.g.
-    // if Sparkle ever fails to start); the button just disables itself then.
-    let updater: SPUStandardUpdaterController?
     var prioritizePermissions = false
 
     private var showPermissionsFirst: Bool { prioritizePermissions && !permissions.screenRecording }
@@ -1661,9 +1648,7 @@ struct ContentView: View {
                 Button("Logs") { Log.revealInFinder() }
                     .controlSize(.small)
                     .help("Reveal the OpenDisplay log files in Finder")
-                if let updater {
-                    CheckForUpdatesView(updater: updater)
-                }
+                CheckForUpdatesView(product: .sender)
                 Button("Quit") { NSApp.terminate(nil) }
                     .controlSize(.small)
             }

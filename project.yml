@@ -2,14 +2,6 @@ name: OpenSidecar
 options:
   createIntermediateGroups: true
   developmentLanguage: en
-# Swift Package Manager dependencies. Sparkle powers the macOS app's
-# out-of-store auto-update (issue #52); it's an embedded open-source
-# framework + CLI tooling, not a hosted service — the appcast feed and the
-# DMG are served from infrastructure we already own (GitHub Pages + Releases).
-packages:
-  Sparkle:
-    url: https://github.com/sparkle-project/Sparkle
-    exactVersion: "2.10.1"
 schemes:
   OpenSidecarMac:
     build:
@@ -48,8 +40,6 @@ targets:
       - Shared
       - path: Pairing/licenses
         buildPhase: resources
-    dependencies:
-      - package: Sparkle
     postBuildScripts:
       - name: Embed Audio Driver Installer
         script: bash "$SRCROOT/MacAudioDriver/embed-package.sh"
@@ -73,13 +63,6 @@ targets:
         NSAudioCaptureUsageDescription: OpenDisplay forwards your Mac’s sound to the selected display when the audio driver is not installed.
         NSBonjourServices: ["_opensidecar._tcp", "_od-sender._tcp", "_od-receiver._tcp"]
         LSApplicationCategoryType: public.app-category.utilities
-        SUFeedURL: $(OPEN_DISPLAY_SPARKLE_FEED_URL)
-        SUPublicEDKey: $(OPEN_DISPLAY_SPARKLE_PUBLIC_KEY)
-        SUEnableAutomaticChecks: true
-        SUAllowsAutomaticUpdates: false
-        SUVerifyUpdateBeforeExtraction: true
-        SURequireSignedFeed: true
-        SUSignedFeedFailureExpirationInterval: 0
     settings:
       base:
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Pairing/include"
@@ -91,11 +74,7 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_ENTITLEMENTS: Mac/OpenSidecarMac.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        OPEN_DISPLAY_SPARKLE_FEED_URL: ""
-        OPEN_DISPLAY_SPARKLE_PUBLIC_KEY: ""
       configs:
-        Release:
-          OPEN_DISPLAY_SPARKLE_FEED_URL: https://raw.githubusercontent.com/xiheha3213906313/opendisplay/sparkle-feeds/appcast.xml
         # Local dev builds get their own identity: TCC keys permission
         # grants by bundle ID + code signature, so a Debug build sharing
         # the release bundle ID knocks out the release app's Screen
@@ -127,9 +106,8 @@ targets:
       - Mac/Log.swift
       - Mac/LogPolicies.swift
       - Mac/CheckForUpdatesView.swift
+      - Mac/MainBranchUpdates.swift
       - Mac/MacPrivacySettings.swift
-    dependencies:
-      - package: Sparkle
     preBuildScripts:
       - name: Build LAN Pairing
         script: bash "$SRCROOT/Pairing/build-apple.sh"
@@ -148,13 +126,6 @@ targets:
         NSBonjourServices: ["_opensidecar._tcp", "_od-sender._tcp", "_od-receiver._tcp"]
         NSAppleEventsUsageDescription: OpenDisplay Receiver shuts this Mac down when the connected Mac asks it to.
         LSApplicationCategoryType: public.app-category.utilities
-        SUFeedURL: $(OPEN_DISPLAY_SPARKLE_FEED_URL)
-        SUPublicEDKey: $(OPEN_DISPLAY_SPARKLE_PUBLIC_KEY)
-        SUEnableAutomaticChecks: true
-        SUAllowsAutomaticUpdates: false
-        SUVerifyUpdateBeforeExtraction: true
-        SURequireSignedFeed: true
-        SUSignedFeedFailureExpirationInterval: 0
     settings:
       base:
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Pairing/include"
@@ -167,11 +138,7 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_ENTITLEMENTS: MacReceiver/OpenSidecarMacReceiver.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        OPEN_DISPLAY_SPARKLE_FEED_URL: ""
-        OPEN_DISPLAY_SPARKLE_PUBLIC_KEY: ""
       configs:
-        Release:
-          OPEN_DISPLAY_SPARKLE_FEED_URL: https://raw.githubusercontent.com/xiheha3213906313/opendisplay/sparkle-feeds/appcast-receiver.xml
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: com.xiheha.opensidecar.mac.receiver.debug
           PRODUCT_NAME: OpenDisplay Receiver Dev
@@ -199,6 +166,7 @@ targets:
       - Mac/AccessoryDisplayHandoff.swift
       - Mac/Log.swift
       - Mac/LogPolicies.swift
+      - Mac/MainBranchUpdates.swift
       - Shared/Protocol.swift
       - Shared/DirectCable.swift
       - Shared/LocalNetworkDevice.swift

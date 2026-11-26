@@ -6,6 +6,13 @@
 "Cancel" = "取消";
 "Cannot connect to this device" = "不能连接本机";
 "Check for Updates…" = "检查更新…";
+"OpenDisplay %@ is available" = "OpenDisplay %@ 有新版本";
+"Download the disk image and open it to install the update." = "请下载安装镜像并打开它以安装更新。";
+"Download…" = "下载…";
+"Later" = "稍后";
+"OpenDisplay is up to date" = "OpenDisplay 已是最新版";
+"Could not check for updates" = "无法检查更新";
+"Try again later." = "请稍后重试。";
 "Close" = "关闭";
 "Closed" = "已关闭";
 "Connected" = "已连接";

@@ -1,60 +1,54 @@
+import AppKit
 import SwiftUI
-import Sparkle
 
 @MainActor
-enum ApplicationUpdates {
-    static func makeController() -> SPUStandardUpdaterController? {
-        let info = Bundle.main
-        guard let key = info.object(forInfoDictionaryKey: "SUPublicEDKey") as? String,
-              Data(base64Encoded: key)?.count == 32,
-              let address = info.object(forInfoDictionaryKey: "SUFeedURL") as? String,
-              let url = URL(string: address), let host = url.host else { return nil }
-        #if DEBUG
-        let loopback = url.scheme == "http" && ["localhost", "127.0.0.1"].contains(host)
-        guard url.scheme == "https" || loopback else { return nil }
-        #else
-        guard url.scheme == "https", host == "raw.githubusercontent.com",
-              url.path.hasPrefix("/xiheha3213906313/opendisplay/sparkle-feeds/") else { return nil }
-        #endif
-        let controller = SPUStandardUpdaterController(
-            startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
-        controller.updater.clearFeedURLFromUserDefaults()
-        controller.startUpdater()
-        #if DEBUG
-        controller.updater.automaticallyChecksForUpdates = false
-        #endif
-        return controller
-    }
-}
+final class ApplicationUpdates: ObservableObject {
+    static let shared = ApplicationUpdates()
 
-/// "Check for Updates…" button wired to Sparkle. Follows Sparkle 2's
-/// documented SwiftUI pattern: a small view model publishes the updater's
-/// `canCheckForUpdates` so the button disables itself while a check is
-/// already running (or the updater isn't ready). Shared by the sender and
-/// the receiver app.
-final class CheckForUpdatesViewModel: ObservableObject {
-    @Published var canCheckForUpdates = false
+    @Published private(set) var isChecking = false
 
-    init(updater: SPUUpdater) {
-        updater.publisher(for: \.canCheckForUpdates)
-            .assign(to: &$canCheckForUpdates)
+    func check(_ product: MainBranchUpdates.Product) {
+        guard !isChecking else { return }
+        isChecking = true
+        Task {
+            defer { isChecking = false }
+            let bundle = Bundle.main
+            let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+            let build = Int(bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0
+            let alert = NSAlert()
+            do {
+                if let update = try await MainBranchUpdates.check(product: product, version: version, build: build) {
+                    alert.messageText = String(localized: "OpenDisplay \(update.version) is available")
+                    alert.informativeText = String(localized: "Download the disk image and open it to install the update.")
+                    alert.addButton(withTitle: String(localized: "Download…"))
+                    alert.addButton(withTitle: String(localized: "Later"))
+                    NSApp.activate(ignoringOtherApps: true)
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        NSWorkspace.shared.open(update.url)
+                    }
+                    return
+                }
+                alert.messageText = String(localized: "OpenDisplay is up to date")
+            } catch {
+                Log.info("Update check failed: \(error)")
+                alert.alertStyle = .warning
+                alert.messageText = String(localized: "Could not check for updates")
+                alert.informativeText = String(localized: "Try again later.")
+            }
+            alert.addButton(withTitle: String(localized: "OK"))
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+        }
     }
 }
 
 struct CheckForUpdatesView: View {
-    @StateObject private var viewModel: CheckForUpdatesViewModel
-    private let updater: SPUUpdater
-
-    init(updater: SPUStandardUpdaterController) {
-        self.updater = updater.updater
-        _viewModel = StateObject(wrappedValue: CheckForUpdatesViewModel(updater: updater.updater))
-    }
+    let product: MainBranchUpdates.Product
+    @ObservedObject private var updater = ApplicationUpdates.shared
 
     var body: some View {
-        Button("Check for Updates…") { updater.checkForUpdates() }
+        Button("Check for Updates…") { updater.check(product) }
             .controlSize(.small)
-            .disabled(!viewModel.canCheckForUpdates)
+            .disabled(updater.isChecking)
     }
 }
-
-/// One connected device: live status, throughput, reconnect + disconnect.

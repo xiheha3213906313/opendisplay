@@ -3470,7 +3470,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     /// Ask the receiver to update (built via JSONSerialization because the
     /// message text is user-facing prose). Dormant while minSupportedPeer is
     /// 1, but the copy must fit the platform the day a floor is raised: a
-    /// Mac receiver updates via Sparkle/the site, not the App Store.
+    /// Mac receivers download updates from OpenDisplay's repository.
     private func sendUpdateRequired(kind: String) {
         let isMac = kind == "Mac"
         let dict: [String: Any] = [

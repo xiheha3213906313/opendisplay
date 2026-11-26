@@ -73,8 +73,7 @@ platform :mac do
     )
     xcargs = version_xcargs
     if scheme == "OpenSidecarMac"
-      # The installer must be embedded before Xcode seals the sender,
-      # including builds subsequently delivered by Sparkle.
+      # Embed the installer before Xcode signs the sender bundle.
       if !ENV["AUDIO_INSTALLER_CERTIFICATE_P12"].to_s.empty?
         Tempfile.create(["opendisplay-installer", ".p12"]) do |certificate|
           certificate.binmode
